@@ -437,6 +437,10 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
 }
 
 /* Overlay-badge op shape */
+.bpmn-overlay-wrap {
+    position: relative;
+    width: 22px; height: 22px;
+}
 .bpmn-overlay {
     width: 22px; height: 22px;
     border-radius: 50%;
@@ -446,13 +450,93 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 2px 6px rgba(0,0,0,.2);
+    box-shadow: 0 2px 6px rgba(0,0,0,.25);
     cursor: help;
     font-family: var(--font);
+    border: 2px solid #fff;
 }
 .bpmn-overlay.sev-error   { background: var(--danger); }
 .bpmn-overlay.sev-warning { background: var(--warn); }
 .bpmn-overlay.sev-info    { background: var(--primary); }
+
+/* Rijke CSS-tooltip met finding-details */
+.bpmn-tooltip {
+    position: absolute;
+    top: 28px;
+    left: 50%;
+    transform: translateX(-80%);
+    width: 340px;
+    max-height: 340px;
+    overflow-y: auto;
+    background: #1d2433;
+    color: #f1f5f9;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: .8rem;
+    line-height: 1.4;
+    box-shadow: 0 6px 22px rgba(0,0,0,.3);
+    z-index: 1000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .12s;
+    text-align: left;
+}
+.bpmn-tooltip::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: 80%;
+    transform: translateX(-50%);
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-bottom: 6px solid #1d2433;
+}
+.bpmn-overlay-wrap:hover .bpmn-tooltip,
+.bpmn-overlay-wrap:focus-within .bpmn-tooltip {
+    opacity: 1;
+    pointer-events: auto;
+}
+.bpmn-tooltip .tt-row + .tt-row { margin-top: 6px; }
+.bpmn-tooltip .tt-head {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    margin-bottom: 4px;
+}
+.bpmn-tooltip .tt-head code {
+    background: rgba(255,255,255,.1);
+    color: #bfdbfe;
+    font-size: .72rem;
+}
+.bpmn-tooltip .tt-rule-title {
+    color: #cbd5e1;
+    font-size: .78rem;
+    font-style: italic;
+}
+.bpmn-tooltip .tt-msg { color: #f1f5f9; }
+.bpmn-tooltip .tt-sug {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: rgba(59, 130, 246, .2);
+    border-left: 3px solid #60a5fa;
+    border-radius: 3px;
+    color: #e0e7ff;
+}
+.bpmn-tooltip .tt-sug strong { color: #fff; }
+.bpmn-tooltip .tt-kws { margin-top: 4px; }
+.bpmn-tooltip .tt-kw {
+    display: inline-block;
+    padding: 1px 6px;
+    background: rgba(255,255,255,.1);
+    color: #cbd5e1;
+    border-radius: 3px;
+    font-family: "Consolas", ui-monospace, monospace;
+    font-size: .72rem;
+    margin-right: 3px;
+}
+.bpmn-tooltip hr.tt-sep {
+    margin: 8px 0;
+    border: 0;
+    border-top: 1px solid rgba(255,255,255,.15);
+}
 
 /* Lijst met findings onder het diagram */
 .bpmn-finding-list {

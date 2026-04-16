@@ -551,24 +551,66 @@
             }
         });
 
+        function escapeHtml(s) {
+            return String(s || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+        function sevIcon(sev) {
+            return sev === 'error' ? '!' : (sev === 'warning' ? '!' : 'i');
+        }
+
         var added = 0;
         Object.keys(worstByEl).forEach(function (id) {
             if (!reg.get(id)) return;            // element bestaat niet in DI
             var sev = worstByEl[id];
             canvas.addMarker(id, 'bpmn-finding-' + sev);
 
-            // Overlay met sev-badge + tooltip (alle findings voor dit element)
-            var msgs = relevant.filter(function (f) { return f.element_id === id; })
-                               .map(function (f) {
-                                  return '[' + f.rule + '] ' + f.message;
-                               }).join('\n');
+            var findingsForEl = relevant.filter(function (f) { return f.element_id === id; });
+
+            // Wrap: badge + rijke tooltip
+            var wrap = document.createElement('div');
+            wrap.className = 'bpmn-overlay-wrap';
+
             var badge = document.createElement('div');
             badge.className = 'bpmn-overlay sev-' + sev;
-            badge.title = msgs;
-            badge.textContent = sev === 'error' ? '!' : (sev === 'warning' ? '!' : 'i');
+            badge.textContent = sevIcon(sev);
+            // Native title als fallback
+            badge.title = findingsForEl.map(function (f) {
+                return f.severity.toUpperCase() + ' [' + f.rule + '] ' + f.message +
+                       (f.suggestion ? '\n\nTIP: ' + f.suggestion : '');
+            }).join('\n\n---\n\n');
+
+            var tip = document.createElement('div');
+            tip.className = 'bpmn-tooltip';
+            tip.innerHTML = findingsForEl.map(function (f) {
+                var kws = (f.matched_keywords && f.matched_keywords.length)
+                    ? '<div class="tt-kws">Matched: ' +
+                      f.matched_keywords.map(function (k) {
+                          return '<span class="tt-kw">' + escapeHtml(k) + '</span>';
+                      }).join(' ') + '</div>'
+                    : '';
+                return '<div class="tt-row">' +
+                         '<div class="tt-head">' +
+                           '<span class="sev-badge sev-' + f.severity + '">' + f.severity.toUpperCase() + '</span> ' +
+                           '<code>' + escapeHtml(f.rule) + '</code> ' +
+                           '<span class="tt-rule-title">' + escapeHtml(f.rule_title || '') + '</span>' +
+                         '</div>' +
+                         '<div class="tt-msg">' + escapeHtml(f.message) + '</div>' +
+                         (f.suggestion
+                           ? '<div class="tt-sug"><strong>Suggestie:</strong> ' + escapeHtml(f.suggestion) + '</div>'
+                           : '') +
+                         kws +
+                       '</div>';
+            }).join('<hr class="tt-sep">');
+
+            wrap.appendChild(badge);
+            wrap.appendChild(tip);
+
             var oid = overlays.add(id, 'finding', {
                 position: { top: -8, right: 8 },
-                html: badge
+                html: wrap
             });
             overlayIds.push(oid);
             added++;
