@@ -52,6 +52,7 @@ class ParsedBpmn:
 
     source_file: str
     process_name: str = ""
+    process_documentation: str = ""
     participants: list[BpmnElement] = field(default_factory=list)   # pools
     lanes: list[BpmnElement] = field(default_factory=list)          # actors
     tasks: list[BpmnElement] = field(default_factory=list)          # process steps
@@ -140,6 +141,16 @@ def _build_lane_lookup(lanes: list[BpmnElement]) -> dict[str, str]:
     return lookup
 
 
+def _extract_docstring(el: ET.Element) -> str:
+    """Concateneer <bpmn:documentation>-elementen direct onder `el`."""
+    docs = el.findall("bpmn:documentation", NS)
+    parts = []
+    for d in docs:
+        if d.text:
+            parts.append(d.text.strip())
+    return "\n\n".join(p for p in parts if p)
+
+
 def _extract_tasks(process: ET.Element, process_id: str,
                    lane_lookup: dict[str, str]) -> list[BpmnElement]:
     tasks: list[BpmnElement] = []
@@ -149,13 +160,13 @@ def _extract_tasks(process: ET.Element, process_id: str,
             continue
         task_id = _attr(child, "id")
         name = _attr(child, "name")
-        # data input/output associations on the task
         data_inputs = [
             _attr(e, "id") for e in child.findall("bpmn:dataInputAssociation", NS)
         ]
         data_outputs = [
             _attr(e, "id") for e in child.findall("bpmn:dataOutputAssociation", NS)
         ]
+        documentation = _extract_docstring(child)
         tasks.append(BpmnElement(
             id=task_id,
             name=name or f"(naamloze {local})",
@@ -166,11 +177,10 @@ def _extract_tasks(process: ET.Element, process_id: str,
             attributes={
                 "data_inputs": data_inputs,
                 "data_outputs": data_outputs,
+                "documentation": documentation,
             },
             evidence={
-                "reason": f"XML-tag <bpmn:{local}> is een {local}-activiteit "
-                          f"(processtap). Geclassificeerd als 'task' omdat "
-                          f"{local} in de BPMN 2.0 spec onder Activity valt.",
+                "reason": f"XML-tag <bpmn:{local}> is een {local}-activiteit.",
                 "xml_tag": f"bpmn:{local}",
                 "in_lane": lane_lookup.get(task_id, "(geen lane)"),
             },
@@ -560,6 +570,10 @@ def parse_bpmn(path: str | Path) -> ParsedBpmn:
         process_name = _attr(process, "name") or process_id
         if not parsed.process_name:
             parsed.process_name = process_name
+        # Documentation op proces-niveau (brontekst uit docx-ingestie)
+        proc_doc = _extract_docstring(process)
+        if proc_doc and not getattr(parsed, "process_documentation", ""):
+            parsed.process_documentation = proc_doc
 
         lanes = _extract_lanes(process, process_id)
         parsed.lanes.extend(lanes)

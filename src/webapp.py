@@ -337,8 +337,10 @@ def _regenerate_project_summary(pid: str) -> dict:
             "lanes": [l.name for l in b.lanes],
             "external_actors": [p.name for p in b.participants
                                 if not p.attributes.get("processRef")],
+            "documentation": getattr(b, "process_documentation", ""),
             "tasks": [{"id": f"A{i+1}", "name": t.name,
-                       "subtype": t.subtype, "lane": t.lane_id or ""}
+                       "subtype": t.subtype, "lane": t.lane_id or "",
+                       "documentation": t.attributes.get("documentation", "")}
                       for i, t in enumerate(b.tasks)],
             "data_objects": [{"name": d.name, "subtype": d.subtype, "id": d.id}
                              for d in b.data_objects],
@@ -939,8 +941,10 @@ def run_pipeline():
             "lanes": [l.name for l in b.lanes],
             "external_actors": [p.name for p in b.participants
                                 if not p.attributes.get("processRef")],
+            "documentation": getattr(b, "process_documentation", ""),
             "tasks": [{"id": f"A{i+1}", "name": t.name,
-                       "subtype": t.subtype, "lane": t.lane_id or ""}
+                       "subtype": t.subtype, "lane": t.lane_id or "",
+                       "documentation": t.attributes.get("documentation", "")}
                       for i, t in enumerate(b.tasks)],
             "data_objects": [{"name": d.name, "subtype": d.subtype, "id": d.id}
                              for d in b.data_objects],
@@ -1075,8 +1079,10 @@ def _regenerate_session_summary(sid: str) -> dict:
             "lanes": [l.name for l in b.lanes],
             "external_actors": [p.name for p in b.participants
                                 if not p.attributes.get("processRef")],
+            "documentation": getattr(b, "process_documentation", ""),
             "tasks": [{"id": f"A{i+1}", "name": t.name,
-                       "subtype": t.subtype, "lane": t.lane_id or ""}
+                       "subtype": t.subtype, "lane": t.lane_id or "",
+                       "documentation": t.attributes.get("documentation", "")}
                       for i, t in enumerate(b.tasks)],
             "data_objects": [{"name": d.name, "subtype": d.subtype, "id": d.id}
                              for d in b.data_objects],

@@ -92,7 +92,26 @@
                     <div id="bpmn-viewer" class="bpmn-viewer"></div>
                     <p class="viewer-hint" id="bpmn-status">Diagram laden...</p>
 
-                    <!-- Per-finding rij met Toepassen-knop (was eerder onder beide) -->
+                    <!-- Procesbeschrijving (brontekst uit <bpmn:documentation>) -->
+                    <div id="process-doc-panel" class="process-doc-panel"></div>
+
+                    <!-- Inline datamodel (ERD) direct onder het diagram -->
+                    {% if summary.mermaid_erd %}
+                    <h4 class="findings-heading" style="margin-top:18px;">
+                        Datamodel uit dit project
+                    </h4>
+                    <p class="viewer-hint">
+                        {{ summary.erd.entities|length }} entities,
+                        {{ summary.erd.relationships|length }} relaties, afgeleid
+                        over alle BPMNs in het project.
+                        <a href="#" data-tab-link="erd">Ga naar volledige ERD-tab &rarr;</a>
+                    </p>
+                    <div class="mermaid-wrap">
+                        <pre class="mermaid" id="mermaid-erd-under-original">{{ summary.mermaid_erd }}</pre>
+                    </div>
+                    {% endif %}
+
+                    <!-- Per-finding rij met Toepassen-knop -->
                     <h4 class="findings-heading">Pijnpunten per element</h4>
                     <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
                 </div>
@@ -624,9 +643,88 @@
             .then(function () { mermaidInlineRendered = true; })
             .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
     }
-    // Rende inline ERD na korte delay (mermaid CDN moet geladen zijn)
-    setTimeout(renderMermaidInline, 800);
-    setTimeout(renderMermaidInline, 2500);
+    var mermaidUnderOriginalRendered = false;
+    function renderMermaidUnderOriginal() {
+        if (mermaidUnderOriginalRendered) return;
+        var el = document.getElementById('mermaid-erd-under-original');
+        if (!el || !window.__mermaid) return;
+        window.__mermaid.run({ nodes: [el] })
+            .then(function () { mermaidUnderOriginalRendered = true; })
+            .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
+    }
+    // Rende inline ERDs na korte delay (mermaid CDN moet geladen zijn)
+    setTimeout(function () {
+        renderMermaidInline();
+        renderMermaidUnderOriginal();
+    }, 800);
+    setTimeout(function () {
+        renderMermaidInline();
+        renderMermaidUnderOriginal();
+    }, 2500);
+
+    // "Ga naar ERD-tab" link onder het datamodel
+    document.addEventListener('click', function (ev) {
+        var link = ev.target.closest('[data-tab-link]');
+        if (!link) return;
+        ev.preventDefault();
+        var tab = document.querySelector('[data-tab="' + link.getAttribute('data-tab-link') + '"]');
+        if (tab) {
+            tab.click();
+            tab.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+
+    // Procesbeschrijving-panel bijwerken per gekozen bestand
+    var reportPerBpmn = {{ summary.report_per_bpmn|tojson }};
+    function renderProcessDocPanel(fileName) {
+        var panel = document.getElementById('process-doc-panel');
+        if (!panel) return;
+        var rep = reportPerBpmn.find(function (r) { return r.name === fileName; });
+        if (!rep) { panel.innerHTML = ''; return; }
+
+        function cleanDoc(s) {
+            return String(s || '')
+                .replace(/SOURCE_DOC_SECTION_TEXT:\s*/g, '')
+                .replace(/SOURCE_SENTENCE:\s*/g, '')
+                .replace(/ENTITY_ATTRIBUTES\[[^\]]+\]:[^\n]*/g, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+        }
+        var procDoc = cleanDoc(rep.documentation || '');
+        var tasksWithDoc = (rep.tasks || []).map(function (t) {
+            return { id: t.id, name: t.name, documentation: cleanDoc(t.documentation || '') };
+        }).filter(function (t) { return t.documentation; });
+        if (!procDoc && !tasksWithDoc.length) {
+            panel.innerHTML =
+              '<div class="doc-panel-empty">' +
+                '<em>Geen brontekst gevonden in deze BPMN (' +
+                '<code>&lt;bpmn:documentation&gt;</code>). ' +
+                'BPMNs die via <strong>Document uploaden</strong> worden gegenereerd ' +
+                'bevatten automatisch de brontekst per taak.</em>' +
+              '</div>';
+            return;
+        }
+
+        var html = '<details class="process-doc" open>' +
+                   '<summary><strong>📖 Procesbeschrijving uit brondocument</strong></summary>';
+        if (procDoc) {
+            html += '<div class="process-doc-section"><h5>Volledige tekst</h5>' +
+                    '<pre class="doc-text">' + escapeHtml(procDoc.slice(0, 3000)) + '</pre></div>';
+        }
+        if (tasksWithDoc.length) {
+            html += '<div class="process-doc-section"><h5>Brontekst per taak</h5>';
+            html += tasksWithDoc.map(function (t) {
+                return '<div class="task-doc">' +
+                         '<strong>' + escapeHtml(t.name) + '</strong> ' +
+                         '<small><code>' + escapeHtml(t.id) + '</code></small>' +
+                         '<div class="task-doc-text">' + escapeHtml(t.documentation) + '</div>' +
+                       '</div>';
+            }).join('');
+            html += '</div>';
+        }
+        html += '</details>';
+        panel.innerHTML = html;
+    }
 
     // --- BPMN viewer ---
     var sid       = {{ summary.sid|tojson }};
@@ -1444,10 +1542,12 @@
         select.addEventListener('change', function () {
             loadBpmn(select.value);
             updateVersionInfo(select.value);
+            renderProcessDocPanel(select.value);
         });
         if (select.value) {
             loadBpmn(select.value);
             updateVersionInfo(select.value);
+            renderProcessDocPanel(select.value);
         }
     }
     if (toggle) toggle.addEventListener('change', function () {
