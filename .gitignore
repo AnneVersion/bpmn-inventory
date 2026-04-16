@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Generated output
+output/*
+!output/.gitkeep
+
+# Input data (kan vertrouwelijk zijn, dus niet mee)
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Zips (handmatige snapshots)
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Previews / rapporten in root
+preview_*.png
+rapport.html
