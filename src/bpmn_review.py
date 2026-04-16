@@ -148,6 +148,17 @@ class Finding:
     fixable: bool = False           # of een 'Toepassen'-flow mogelijk is
     # Verrijking voor R008 (gateway zonder default flow):
     outgoing_flows: list[dict] = field(default_factory=list)  # [{id, name, target_id, target_name}]
+    # --- Evidence / redenering: transparant hoe we tot deze conclusie kwamen
+    evidence: dict = field(default_factory=dict)
+    # Typische keys:
+    #   checked    = 'wat hebben we onderzocht'
+    #   observed   = 'wat zagen we'
+    #   expected   = 'wat hoort er te staan'
+    #   conclusion = 'waarom is dit een probleem'
+    #   xml_refs   = ['<bpmn:flowNodeRef>T1 (niet gevonden)', ...]
+    # Fix-type per regel (bepaalt dialog in UI)
+    fix_type: str = ""              # "auto" | "text" | "pick_lane" | "pick_task" | ...
+    fix_params: dict = field(default_factory=dict)  # context-data voor dialog
 
     def to_dict(self) -> dict:
         return {
@@ -166,6 +177,9 @@ class Finding:
             "suggested_attributes": self.suggested_attributes,
             "fixable": self.fixable,
             "outgoing_flows": self.outgoing_flows,
+            "evidence": self.evidence,
+            "fix_type": self.fix_type,
+            "fix_params": self.fix_params,
         }
 
 
@@ -298,6 +312,10 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
     has_outgoing, has_incoming = _flows_source_target(parsed)
 
     # Task-niveau
+    lane_options = [{"id": l.id, "name": l.name} for l in parsed.lanes]
+    task_options = [{"id": tt.id, "name": tt.name or tt.id}
+                    for tt in parsed.tasks]
+
     for t in parsed.tasks:
         name = (t.name or "").strip()
 
@@ -310,6 +328,15 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                 message="Taak heeft geen name-attribuut.",
                 suggestion="Geef elke taak een actiegerichte naam "
                            "(werkwoord + object).",
+                evidence={
+                    "checked": f"Attribute `name` op <bpmn:{t.subtype} id=\"{t.id}\">",
+                    "observed": "name-attribute ontbreekt of is leeg",
+                    "expected": "Een beschrijvende naam (bv. 'Registreer lid')",
+                    "conclusion": "Zonder naam is de taak onleesbaar voor auditors.",
+                },
+                fixable=True, fix_type="text",
+                fix_params={"field": "name", "label": "Nieuwe taaknaam",
+                            "placeholder": "Werkwoord + object, bv. 'Verwerk aanvraag'"},
             ))
 
         # R010: generieke taaknaam
@@ -322,6 +349,17 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                         " handeling.",
                 suggestion="Hernoem naar iets als 'Beoordeel aanvraag' of"
                            " 'Registreer lidmaatschap'.",
+                evidence={
+                    "checked": f"Taaknaam '{name}' vergeleken met generieke-lijst",
+                    "observed": f"'{name.lower()}' staat in GENERIC_NAMES "
+                                f"{sorted(GENERIC_NAMES)}",
+                    "expected": "Een specifieke naam met werkwoord + object",
+                    "conclusion": "Generieke namen maken het proces onbegrijpelijk.",
+                },
+                fixable=True, fix_type="text",
+                fix_params={"field": "name", "label": "Nieuwe taaknaam",
+                            "placeholder": "Werkwoord + object, bv. 'Beoordeel aanvraag'",
+                            "current": name},
             ))
 
         # R001: taak zonder lane
@@ -333,6 +371,20 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                 message=f"Taak '{name}' zit niet in een lane.",
                 suggestion="Plaats de taak in een <bpmn:lane> om de"
                            " uitvoerende rol/afdeling expliciet te maken.",
+                evidence={
+                    "checked": (f"<bpmn:flowNodeRef>{t.id}</bpmn:flowNodeRef> "
+                                f"in alle <bpmn:lane>-elementen + "
+                                "geometrische DI-fallback op <bpmndi:BPMNShape>-bounds"),
+                    "observed": (f"Taak-id {t.id} niet gevonden als flowNodeRef "
+                                 f"in lanes {[l.name for l in parsed.lanes]} én "
+                                 "shape-center valt buiten alle lane-bounds"),
+                    "expected": "Task.lane_id verwijst naar een lane.id",
+                    "conclusion": "Zonder lane is de uitvoerende rol onbekend "
+                                  "— vereist voor RACI-analyse en autorisatie.",
+                },
+                fixable=bool(lane_options),
+                fix_type="pick_lane" if lane_options else "",
+                fix_params={"lanes": lane_options} if lane_options else {},
             ))
 
         # R002 / R003: hangende taken
@@ -343,6 +395,13 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                 element_kind=t.subtype,
                 message=f"Taak '{name}' heeft geen inkomende sequence flow.",
                 suggestion="Verbind een voorgaande taak of start-event.",
+                evidence={
+                    "checked": "Zoekt naar <bpmn:sequenceFlow targetRef=\"" + t.id + "\">",
+                    "observed": f"0 sequence flows wijzen naar {t.id}",
+                    "expected": ">= 1 inkomende sequenceFlow (behalve start-events)",
+                    "conclusion": "Taak kan nooit worden gestart vanuit het "
+                                  "proces; is een hangende activiteit.",
+                },
             ))
         if t.id not in has_outgoing:
             findings.append(Finding(
@@ -351,6 +410,12 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                 element_kind=t.subtype,
                 message=f"Taak '{name}' heeft geen uitgaande sequence flow.",
                 suggestion="Verbind met een volgende taak of end-event.",
+                evidence={
+                    "checked": "Zoekt naar <bpmn:sequenceFlow sourceRef=\"" + t.id + "\">",
+                    "observed": f"0 sequence flows vertrekken vanaf {t.id}",
+                    "expected": ">= 1 uitgaande sequenceFlow (behalve end-events)",
+                    "conclusion": "Proces komt tot stilstand; geen vervolg gedefinieerd.",
+                },
             ))
 
     # Proces-niveau
@@ -363,6 +428,13 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
             element_name=parsed.process_name or src, element_kind="process",
             message="Proces heeft geen <bpmn:startEvent>.",
             suggestion="Voeg een start-event toe vooraan het proces.",
+            evidence={
+                "checked": "Aantal <bpmn:startEvent>-elementen in het process",
+                "observed": "0 start events gevonden",
+                "expected": ">= 1 start event (BPMN 2.0 best practice)",
+                "conclusion": "Proces heeft geen duidelijk startpunt; "
+                              "uitvoeringsengine kan niet weten waar te beginnen.",
+            },
         ))
     if parsed.tasks and not end_events:
         findings.append(Finding(
@@ -371,6 +443,12 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
             element_name=parsed.process_name or src, element_kind="process",
             message="Proces heeft geen <bpmn:endEvent>.",
             suggestion="Voeg een end-event toe aan het einde van het proces.",
+            evidence={
+                "checked": "Aantal <bpmn:endEvent>-elementen in het process",
+                "observed": "0 end events gevonden",
+                "expected": ">= 1 end event",
+                "conclusion": "Proces heeft geen duidelijk eindpunt.",
+            },
         ))
 
     # Gateways
@@ -381,15 +459,27 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
         if s:
             out_count[s] += 1
     for gw in parsed.gateways:
-        if out_count.get(gw.id, 0) == 1:
+        n_out = out_count.get(gw.id, 0)
+        if n_out == 1:
             findings.append(Finding(
                 rule="R007", severity=RULES["R007"]["severity"],
                 source_file=src, element_id=gw.id, element_name=gw.name,
                 element_kind=gw.subtype,
                 message=f"Gateway '{gw.name or gw.id}' heeft slechts 1 uitgaande"
                         " flow.",
-                suggestion="Verwijder de gateway of voeg een tweede uitgaande"
-                           " flow met conditie toe.",
+                suggestion="Verwijder de gateway (flow wordt direct gemaakt) "
+                           "of voeg een tweede uitgaande flow met conditie toe.",
+                evidence={
+                    "checked": (f"Aantal <bpmn:sequenceFlow sourceRef=\"{gw.id}\">-"
+                                "elementen"),
+                    "observed": f"{n_out} uitgaande flow",
+                    "expected": ">= 2 (gateway splitst of merget anders niet)",
+                    "conclusion": "Met 1 uitgaande flow voegt de gateway niets "
+                                  "toe; het diagram is verwarrend.",
+                },
+                fixable=True, fix_type="auto_confirm",
+                fix_params={"operation": "remove_degenerate_gateway",
+                            "gateway_id": gw.id},
             ))
         # R008: exclusive zonder default -> lijst uitgaande flows bijvoegen
         if gw.subtype == "exclusiveGateway" and not gw.attributes.get("default"):
@@ -421,6 +511,16 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                             "Klik 'Toepassen' om te kiezen."),
                 outgoing_flows=outgoing,
                 fixable=len(outgoing) >= 2,
+                fix_type="r008_pick_flow",
+                evidence={
+                    "checked": (f"`default`-attribuut op <bpmn:exclusiveGateway "
+                                f"id=\"{gw.id}\">"),
+                    "observed": "`default`-attribuut ontbreekt",
+                    "expected": "default-flow is best practice zodat er altijd "
+                                "een fallback-pad bestaat",
+                    "conclusion": ("Zonder default blijft de flow hangen als "
+                                   "geen van de condities matcht."),
+                },
             ))
 
     # DataObjects zonder naam
@@ -433,6 +533,16 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                 message="DataObject heeft geen name-attribuut.",
                 suggestion="Geef het dataObject een betekenisvolle naam"
                            " (bv. 'Lidmaatschap', 'Factuur').",
+                evidence={
+                    "checked": f"Attribute `name` op <bpmn:{d.subtype} id=\"{d.id}\">",
+                    "observed": f"name = '{d.name}'",
+                    "expected": "Een betekenisvolle entity-naam",
+                    "conclusion": "Naamloze dataObjects kunnen niet in de "
+                                  "inventarisatie en niet in het ERD.",
+                },
+                fixable=True, fix_type="text",
+                fix_params={"field": "name", "label": "DataObject-naam",
+                            "placeholder": "bv. 'Lidmaatschap'"},
             ))
 
     # R006: dataObject zonder link
@@ -452,6 +562,19 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                         " data(Input|Output)Association aan een taak gekoppeld.",
                 suggestion="Verbind het dataObject met de taak die het leest of"
                            " schrijft.",
+                evidence={
+                    "checked": (f"Of {d.id} voorkomt als sourceRef/targetRef "
+                                "in een <bpmn:data(In|Out)putAssociation>"),
+                    "observed": f"{d.id} nergens gevonden in data-associations",
+                    "expected": "Minstens 1 taak die dit object leest of schrijft",
+                    "conclusion": "Los dataObject dat niet wordt gebruikt in "
+                                  "het proces.",
+                },
+                fixable=bool(task_options),
+                fix_type="r006_link_task" if task_options else "",
+                fix_params={"tasks": task_options,
+                            "dataobject_id": d.id,
+                            "dataobject_name": d.name} if task_options else {},
             ))
 
     return findings
@@ -524,6 +647,19 @@ def _review_semantic(parsed: ParsedBpmn,
                 suggested_object=suggested,
                 suggested_attributes=attrs,
                 fixable=bool(suggested and action),
+                fix_type="r101_add_dataobject" if suggested and action else "",
+                evidence={
+                    "checked": (f"Taaknaam '{name}' tegen DATA_VERBS en DATA_NOUNS, "
+                                "en of {t.id} voorkomt in data-associations"),
+                    "observed": (f"Werkwoorden matched: {verbs}; znwn matched: {nouns}; "
+                                 "data-associations op deze taak: 0"),
+                    "expected": ("Als een taak data bewerkt, moet er een "
+                                 "<bpmn:data(In|Out)putAssociation> naar een "
+                                 "<bpmn:dataObject> zijn."),
+                    "conclusion": (f"Taak impliceert {action}-actie op "
+                                   f"'{suggested}' maar is niet aan een "
+                                   "dataObject gekoppeld."),
+                },
             ))
 
         # R102: systeem genoemd zonder dataStore in proces
@@ -543,6 +679,20 @@ def _review_semantic(parsed: ParsedBpmn,
                     suggestion=(f"Voeg een <bpmn:dataStoreReference>"
                                 f" '{systems[0].upper()}' toe als master-bron."),
                     matched_keywords=systems,
+                    evidence={
+                        "checked": (f"Taaknaam '{name}' tegen SYSTEMS-lijst + "
+                                    "aanwezige <bpmn:dataStore>-elementen"),
+                        "observed": (f"Systeem-match: {systems}; geen "
+                                     "overeenkomstige <bpmn:dataStore> in proces"),
+                        "expected": ("Ieder gerefereerd master-systeem verdient "
+                                     "een <bpmn:dataStoreReference>."),
+                        "conclusion": ("Systeem wordt gebruikt maar niet als "
+                                       "data-bron vastgelegd — lineage ontbreekt."),
+                    },
+                    fixable=True,
+                    fix_type="r102_add_datastore",
+                    fix_params={"system_name": systems[0].upper(), "task_id": t.id,
+                                "action_type": _classify_action(verbs) or "READ"},
                 ))
 
     return findings

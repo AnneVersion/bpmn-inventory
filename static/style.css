@@ -537,6 +537,29 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     border: 0;
     border-top: 1px solid rgba(255,255,255,.15);
 }
+.bpmn-tooltip .tt-ev {
+    margin-top: 8px;
+    padding: 6px 8px;
+    background: rgba(156, 163, 175, .15);
+    border-left: 3px solid #9ca3af;
+    border-radius: 3px;
+    font-size: .75rem;
+    color: #e5e7eb;
+    line-height: 1.45;
+}
+.bpmn-tooltip .tt-ev-title {
+    font-weight: 700;
+    color: #fef08a;
+    margin-bottom: 3px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    font-size: .7rem;
+}
+.bpmn-tooltip .tt-ev em {
+    color: #fef08a;
+    font-style: normal;
+    font-weight: 600;
+}
 
 /* Lijst met findings onder het diagram */
 .bpmn-finding-list {

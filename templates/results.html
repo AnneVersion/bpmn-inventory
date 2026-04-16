@@ -699,6 +699,16 @@
                               + '<a href="/definitions" target="_blank">Definieer in dictionary</a>.</div>') +
                         '</div>';
                 }
+                var ev = f.evidence || {};
+                var evBlock = (ev.checked || ev.observed)
+                    ? '<div class="tt-ev">' +
+                        '<div class="tt-ev-title">Redenering:</div>' +
+                        (ev.checked   ? '<div><em>Gecheckt:</em> '    + escapeHtml(ev.checked)    + '</div>' : '') +
+                        (ev.observed  ? '<div><em>Waargenomen:</em> ' + escapeHtml(ev.observed)   + '</div>' : '') +
+                        (ev.expected  ? '<div><em>Verwacht:</em> '    + escapeHtml(ev.expected)   + '</div>' : '') +
+                        (ev.conclusion? '<div><em>Conclusie:</em> '   + escapeHtml(ev.conclusion) + '</div>' : '') +
+                      '</div>'
+                    : '';
                 return '<div class="tt-row">' +
                          '<div class="tt-head">' +
                            '<span class="sev-badge sev-' + f.severity + '">' + f.severity.toUpperCase() + '</span> ' +
@@ -710,6 +720,7 @@
                          (f.suggestion
                            ? '<div class="tt-sug"><strong>Suggestie:</strong> ' + escapeHtml(f.suggestion) + '</div>'
                            : '') +
+                         evBlock +
                          kws +
                        '</div>';
             }).join('<hr class="tt-sep">');
