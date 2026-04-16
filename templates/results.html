@@ -24,6 +24,12 @@
     <nav class="tab-nav" role="tablist">
         <button class="tab-btn active" data-tab="bpmn" type="button">BPMN diagram</button>
         <button class="tab-btn" data-tab="erd" type="button">ERD</button>
+        <button class="tab-btn" data-tab="review" type="button">
+            Kwaliteitscheck
+            {% if summary.findings_summary.total %}
+            <span class="tab-count">{{ summary.findings_summary.total }}</span>
+            {% endif %}
+        </button>
         <button class="tab-btn" data-tab="rapport" type="button">Rapport</button>
         <button class="tab-btn" data-tab="inventory" type="button">Inventarisatie</button>
         <button class="tab-btn" data-tab="actors" type="button">Actoren &amp; ankers</button>
@@ -74,6 +80,101 @@
                     een entiteitsdiagram te genereren.
                 </p>
             </div>
+        {% endif %}
+    </section>
+
+    <!-- ================== TAB: REVIEW ================== -->
+    <section class="tab-panel" data-panel="review">
+        <p class="lead">
+            Automatische kwaliteitscheck tegen BPMN 2.0 modelleringsregels +
+            semantische heuristiek (taaknamen die data-interactie impliceren
+            zonder dat het dataObject in de BPMN staat).
+        </p>
+
+        <div class="review-kpis">
+            <div class="review-kpi sev-error">
+                <span class="num">{{ summary.findings_summary.by_severity.get('error', 0) }}</span>
+                <span class="label">Errors</span>
+            </div>
+            <div class="review-kpi sev-warning">
+                <span class="num">{{ summary.findings_summary.by_severity.get('warning', 0) }}</span>
+                <span class="label">Warnings</span>
+            </div>
+            <div class="review-kpi sev-info">
+                <span class="num">{{ summary.findings_summary.by_severity.get('info', 0) }}</span>
+                <span class="label">Info</span>
+            </div>
+        </div>
+
+        {% if summary.findings %}
+        <div class="table-tools">
+            <input type="search" id="finding-filter"
+                   placeholder="Filter op regel, bestand of element..."
+                   class="filter-input">
+            <label style="margin-left:10px; font-size:.9rem;">
+                <input type="checkbox" id="only-errors"> alleen errors/warnings
+            </label>
+        </div>
+
+        <div class="table-scroll">
+        <table class="data-table" id="findings-table">
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Regel</th>
+                    <th>Bestand</th>
+                    <th>Element</th>
+                    <th>Bevinding</th>
+                    <th>Suggestie</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for f in summary.findings %}
+                <tr data-severity="{{ f.severity }}">
+                    <td><span class="sev-badge sev-{{ f.severity }}">{{ f.severity|upper }}</span></td>
+                    <td><code title="{{ f.rule_title }}">{{ f.rule }}</code><br><small>{{ f.rule_title }}</small></td>
+                    <td><small><code>{{ f.source_file }}</code></small></td>
+                    <td>
+                        <strong>{{ f.element_name or '(geen naam)' }}</strong>
+                        <br><small>{{ f.element_kind }} &middot; <code>{{ f.element_id }}</code></small>
+                    </td>
+                    <td>
+                        {{ f.message }}
+                        {% if f.matched_keywords %}
+                        <br><small>
+                            <em>Matched:</em>
+                            {% for k in f.matched_keywords %}<span class="chip chip-kw">{{ k }}</span>{% endfor %}
+                        </small>
+                        {% endif %}
+                    </td>
+                    <td><small>{{ f.suggestion }}</small></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+
+        <details class="process-details" style="margin-top:24px;">
+            <summary><strong>Regel-catalogus ({{ summary.findings_summary.rules_catalog|length }})</strong></summary>
+            <table class="data-table" style="margin-top:10px;">
+                <thead><tr><th>Regel</th><th>Severity</th><th>Titel</th><th>Waarom</th></tr></thead>
+                <tbody>
+                {% for r in summary.findings_summary.rules_catalog %}
+                    <tr>
+                        <td><code>{{ r.id }}</code></td>
+                        <td><span class="sev-badge sev-{{ r.severity }}">{{ r.severity|upper }}</span></td>
+                        <td>{{ r.title }}</td>
+                        <td><small>{{ r.why }}</small></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% else %}
+        <div class="empty">
+            <h3>Geen issues gevonden</h3>
+            <p>De BPMN's voldoen aan alle gecontroleerde regels.</p>
+        </div>
         {% endif %}
     </section>
 
@@ -329,7 +430,26 @@
         });
     });
 
-    // --- Filter ---
+    // --- Findings filter ---
+    var fInput = document.getElementById('finding-filter');
+    var fTable = document.getElementById('findings-table');
+    var onlyErr = document.getElementById('only-errors');
+    function applyFindingFilter() {
+        if (!fTable) return;
+        var q = (fInput && fInput.value || '').toLowerCase();
+        var onlyE = !!(onlyErr && onlyErr.checked);
+        var rows = fTable.tBodies[0].rows;
+        for (var i = 0; i < rows.length; i++) {
+            var sev = rows[i].getAttribute('data-severity');
+            var textOk = rows[i].textContent.toLowerCase().indexOf(q) >= 0;
+            var sevOk  = !onlyE || sev === 'error' || sev === 'warning';
+            rows[i].style.display = (textOk && sevOk) ? '' : 'none';
+        }
+    }
+    if (fInput) fInput.addEventListener('input', applyFindingFilter);
+    if (onlyErr) onlyErr.addEventListener('change', applyFindingFilter);
+
+    // --- Filter (inventory) ---
     var input = document.getElementById('inv-filter');
     var table = document.getElementById('inv-table');
     if (input && table) {

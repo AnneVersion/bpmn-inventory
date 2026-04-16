@@ -436,6 +436,63 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
 }
 .chip-extern { background: #fde4cf; color: #9a3412; }
 
+/* ---------- Review / Findings ---------- */
+.tab-count {
+    display: inline-block;
+    min-width: 20px;
+    padding: 0 6px;
+    margin-left: 4px;
+    background: var(--primary);
+    color: #fff;
+    border-radius: 10px;
+    font-size: .72rem;
+    line-height: 18px;
+    text-align: center;
+    vertical-align: middle;
+}
+
+.review-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin: 12px 0 20px;
+}
+.review-kpi {
+    padding: 14px 16px;
+    border-radius: 8px;
+    text-align: center;
+    border: 1px solid var(--border);
+}
+.review-kpi .num { font-size: 1.6rem; font-weight: 700; display: block; }
+.review-kpi .label { font-size: .85rem; color: var(--muted); }
+.review-kpi.sev-error   { background: #fef1f1; border-color: #fecaca; }
+.review-kpi.sev-error .num   { color: var(--danger); }
+.review-kpi.sev-warning { background: #fff7e6; border-color: #fbcd7c; }
+.review-kpi.sev-warning .num { color: var(--warn); }
+.review-kpi.sev-info    { background: #eef2fb; border-color: #c7d2fe; }
+.review-kpi.sev-info .num    { color: var(--primary); }
+
+.sev-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .03em;
+    border-radius: 4px;
+    color: #fff;
+}
+.sev-badge.sev-error   { background: var(--danger); }
+.sev-badge.sev-warning { background: var(--warn); }
+.sev-badge.sev-info    { background: var(--primary); }
+
+.chip-kw {
+    background: #f1f5f9;
+    color: #334155;
+    border: 1px solid #cbd5e1;
+    font-family: "Consolas", ui-monospace, monospace;
+    font-size: .75rem;
+}
+
 /* ---------- Empty state ---------- */
 .empty {
     border: 1px dashed var(--border);

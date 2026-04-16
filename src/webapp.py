@@ -34,6 +34,7 @@ from merger import merge                                 # noqa: E402
 from xlsx_export import write_xlsx                       # noqa: E402
 from drawio_export import write_drawio                   # noqa: E402
 from docx_export import write_docx                       # noqa: E402
+from bpmn_review import review, summarize                # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -204,6 +205,8 @@ def run_pipeline():
         ), 400
 
     model = merge(bpmns)
+    findings = review(model)
+    findings_summary = summarize(findings)
 
     xlsx_path = out_dir / "data-inventarisatie.xlsx"
     drawio_path = out_dir / "bpmn-en-erd.drawio"
@@ -258,6 +261,8 @@ def run_pipeline():
         ],
         "inventory": [asdict(r) for r in model.inventory],
         "mermaid_erd": build_erd_mermaid(model),
+        "findings": findings,
+        "findings_summary": findings_summary,
         # Rapport-secties per BPMN (voor inline HTML rapport)
         "report_per_bpmn": [{
             "name": b.source_file,
