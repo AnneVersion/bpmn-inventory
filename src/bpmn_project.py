@@ -151,3 +151,111 @@ def rename(root: Path, pid: str, new_name: str) -> dict | None:
     meta["name"] = new_name.strip() or meta["name"]
     save(root, meta)
     return meta
+
+
+# ---------------------------------------------------------------------------
+# Dependency-sort: lifecycle-based topologische volgorde
+# ---------------------------------------------------------------------------
+
+def compute_dependency_order(entities: list, source_file_by_process: dict
+                              ) -> tuple[list[str], list[dict]]:
+    """Bereken een topologische volgorde van BPMN-bestanden op basis
+    van entity-lifecycle. Returns (ordered_filenames, reasons).
+
+    Regel: als entity X wordt aangemaakt door proces A (staat als
+    creator) en gelezen door proces B (staat als reader of updater),
+    dan moet A vóór B komen. Updaters komen na creators; alleen-readers
+    komen na creators en updaters.
+
+    `entities` = lijst Entity-objecten uit bpmn_erd.build_erd.
+    `source_file_by_process` = {process_name: source_file} mapping.
+
+    `reasons` per file: waarom de file op die positie staat
+    (bv. "Moet na P01 omdat dat Lidmaatschap creëert").
+    """
+    from collections import defaultdict
+
+    # Verzamel alle files (inclusief die zonder data-interactie)
+    all_files = set(source_file_by_process.values())
+
+    # Bouw dependency-graph: file -> set(files die hier voor moeten komen)
+    must_come_after: dict[str, set[str]] = defaultdict(set)
+    reasons_for: dict[str, list[str]] = defaultdict(list)
+
+    for e in entities:
+        creators = [p for p in e.creators]
+        updaters = [p for p in e.updaters]
+        readers  = [p for p in e.readers]
+
+        creator_files = {source_file_by_process.get(p) for p in creators}
+        creator_files.discard(None)
+        updater_files = {source_file_by_process.get(p) for p in updaters}
+        updater_files.discard(None)
+        reader_files  = {source_file_by_process.get(p) for p in readers}
+        reader_files.discard(None)
+
+        # Updaters komen na creators
+        for u in updater_files:
+            for c in creator_files:
+                if u != c:
+                    must_come_after[u].add(c)
+                    reasons_for[u].append(
+                        f"Na {c!r} omdat dat {e.name!r} aanmaakt "
+                        f"(hier wijzigen)."
+                    )
+        # Readers komen na creators en updaters
+        for r in reader_files:
+            for c in creator_files:
+                if r != c:
+                    must_come_after[r].add(c)
+                    reasons_for[r].append(
+                        f"Na {c!r} omdat dat {e.name!r} aanmaakt."
+                    )
+            for u in updater_files:
+                if r != u and r not in creator_files:
+                    must_come_after[r].add(u)
+                    reasons_for[r].append(
+                        f"Na {u!r} omdat dat {e.name!r} laatst wijzigt."
+                    )
+
+    # Kahn's algoritme voor topologische sort
+    # Eerst in-degree tellen
+    in_degree: dict[str, int] = {f: 0 for f in all_files}
+    edges_out: dict[str, set[str]] = defaultdict(set)
+    for target, sources in must_come_after.items():
+        for src in sources:
+            if src not in all_files:
+                continue
+            edges_out[src].add(target)
+            in_degree[target] = in_degree.get(target, 0) + 1
+
+    # Seed: files zonder inkomende edges, alfabetisch gesorteerd voor stabiele output
+    ready = sorted([f for f, deg in in_degree.items() if deg == 0])
+    ordered: list[str] = []
+    while ready:
+        f = ready.pop(0)
+        ordered.append(f)
+        for t in sorted(edges_out.get(f, set())):
+            in_degree[t] -= 1
+            if in_degree[t] == 0:
+                ready.append(t)
+        ready.sort()  # Stabiel alfabetisch
+
+    # Als er cyclus is, voeg overgebleven files aan het einde toe
+    missing = [f for f in all_files if f not in ordered]
+    ordered.extend(sorted(missing))
+
+    # Bouw reasons: per file een korte uitleg
+    reasons: list[dict] = []
+    for f in ordered:
+        r_list = list(dict.fromkeys(reasons_for.get(f, [])))  # uniek, behoud order
+        if not r_list:
+            # Geen dependencies: leg uit waarom het vrij staat
+            if f in {src for src_set in must_come_after.values() for src in src_set}:
+                # Anderen hangen van mij af
+                r_list = ["Vrij (geen voorgangers) — andere processen hangen van dit af."]
+            else:
+                r_list = ["Geen lifecycle-afhankelijkheden met andere processen."]
+        reasons.append({"file": f, "reasons": r_list[:3]})  # max 3 om te voorkomen dat het te lang wordt
+
+    return ordered, reasons

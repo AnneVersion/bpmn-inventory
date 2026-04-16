@@ -619,6 +619,59 @@ def project_download(pid: str, filename: str):
     return send_from_directory(str(out_dir), filename, as_attachment=True)
 
 
+@app.route("/project/<pid>/auto-order", methods=["POST"])
+def project_auto_order(pid: str):
+    """Bereken lifecycle-gebaseerde volgorde en sla op in bpmn_order."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    bpmns = parse_all(data_dir)
+    if not bpmns:
+        return "Geen BPMNs in dit project", 400
+
+    model = merge(bpmns)
+    user_defs = bpmn_defs.load(ROOT)
+    entities, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+    source_file_by_process = {
+        (b.process_name or b.source_file): b.source_file for b in bpmns
+    }
+    ordered, reasons = bpmn_project.compute_dependency_order(
+        entities, source_file_by_process
+    )
+    meta["bpmn_order"] = ordered
+    meta["order_reasons"] = reasons
+    meta["order_mode"] = "auto"
+    bpmn_project.save(ROOT, meta)
+    return redirect(url_for("project_detail", pid=pid))
+
+
+@app.route("/project/<pid>/reorder", methods=["POST"])
+def project_reorder(pid: str):
+    """Verplaats één bestand omhoog of omlaag in bpmn_order."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    target = secure_filename(request.form.get("target", ""))
+    direction = request.form.get("direction", "up")  # 'up' | 'down'
+    order = list(meta.get("bpmn_order", []))
+    if target not in order:
+        return "Onbekend bestand", 400
+    idx = order.index(target)
+    if direction == "up" and idx > 0:
+        order[idx], order[idx - 1] = order[idx - 1], order[idx]
+    elif direction == "down" and idx < len(order) - 1:
+        order[idx], order[idx + 1] = order[idx + 1], order[idx]
+    meta["bpmn_order"] = order
+    meta["order_mode"] = "manual"
+    bpmn_project.save(ROOT, meta)
+    return redirect(url_for("project_detail", pid=pid))
+
+
 @app.route("/project/<pid>/delete", methods=["POST"])
 def project_delete(pid: str):
     if not bpmn_project.is_valid_pid(pid):

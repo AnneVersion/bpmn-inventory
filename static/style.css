@@ -233,6 +233,48 @@ a:hover { text-decoration: underline; }
     margin-top: 0 !important;
 }
 
+.order-mode-tag {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    margin-left: 4px;
+}
+.order-mode-tag.auto   { background: #d1fae5; color: #065f46; }
+.order-mode-tag.manual { background: #fef3c7; color: #92400e; }
+
+.order-table .order-reasons {
+    margin: 0;
+    padding-left: 18px;
+    font-size: .82rem;
+    color: var(--muted);
+    line-height: 1.45;
+}
+.order-table .order-reasons li { margin: 2px 0; }
+
+.btn-icon {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: .95rem;
+    cursor: pointer;
+    font-family: inherit;
+    color: var(--text);
+    margin: 0 2px;
+}
+.btn-icon:hover:not(:disabled) {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+.btn-icon:disabled {
+    opacity: .3;
+    cursor: not-allowed;
+}
+
 /* ---------- Info cards ---------- */
 .info-grid {
     display: grid;

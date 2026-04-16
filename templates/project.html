@@ -54,7 +54,20 @@
             </button>
         </form>
         <a href="{{ url_for('project_results', pid=project.id) }}"
-           class="btn-secondary">Resultaten bekijken (als al geanalyseerd)</a>
+           class="btn-secondary">Resultaten bekijken</a>
+        <form method="post"
+              action="{{ url_for('project_auto_order', pid=project.id) }}"
+              style="display:inline;"
+              title="Sorteer processen op lifecycle-afhankelijkheden (creator voor reader)">
+            <button type="submit" class="btn-secondary">
+                &#8646; Auto-sorteer op dependencies
+            </button>
+        </form>
+        {% if project.order_mode == 'manual' %}
+          <span class="order-mode-tag manual">handmatige volgorde</span>
+        {% elif project.order_mode == 'auto' %}
+          <span class="order-mode-tag auto">auto-sorted</span>
+        {% endif %}
     </div>
     {% if request.args.get('need_analyze') %}
     <div class="alert" style="margin-top:10px;">
@@ -62,17 +75,57 @@
         BPMNs</strong> hierboven.
     </div>
     {% endif %}
-    <table class="data-table" style="margin-top:14px;">
+    {% set reasons_by_file = {} %}
+    {% for r in (project.order_reasons or []) %}
+      {% if reasons_by_file.update({r.file: r.reasons}) %}{% endif %}
+    {% endfor %}
+    {% set order = project.bpmn_order %}
+    {% set total = order|length %}
+    <table class="data-table order-table" style="margin-top:14px;">
         <thead>
-            <tr><th>Bestand</th><th>Positie in volgorde</th><th>Acties</th></tr>
+            <tr>
+              <th style="width:50px;">#</th>
+              <th>Bestand</th>
+              <th>Volgorde-reden</th>
+              <th style="width:120px;">Verschuif</th>
+              <th style="width:120px;">Acties</th>
+            </tr>
         </thead>
         <tbody>
-        {% for f in project.bpmn_files %}
+        {% for f in order %}
+        {% set idx = loop.index0 %}
         <tr>
+            <td><strong>{{ loop.index }}</strong></td>
             <td><code>{{ f }}</code></td>
             <td>
-                {% set pos = (project.bpmn_order.index(f) + 1) if f in project.bpmn_order else '-' %}
-                <strong>{{ pos }}</strong> / {{ project.bpmn_files|length }}
+                {% set rr = reasons_by_file.get(f) %}
+                {% if rr %}
+                <ul class="order-reasons">
+                  {% for line in rr %}<li>{{ line }}</li>{% endfor %}
+                </ul>
+                {% else %}
+                <small class="muted">Geen dependency-reden beschikbaar (run Auto-sorteer).</small>
+                {% endif %}
+            </td>
+            <td>
+                <form method="post"
+                      action="{{ url_for('project_reorder', pid=project.id) }}"
+                      style="display:inline;">
+                    <input type="hidden" name="target" value="{{ f }}">
+                    <input type="hidden" name="direction" value="up">
+                    <button type="submit" class="btn-icon"
+                            {% if idx == 0 %}disabled{% endif %}
+                            title="Omhoog">&uarr;</button>
+                </form>
+                <form method="post"
+                      action="{{ url_for('project_reorder', pid=project.id) }}"
+                      style="display:inline;">
+                    <input type="hidden" name="target" value="{{ f }}">
+                    <input type="hidden" name="direction" value="down">
+                    <button type="submit" class="btn-icon"
+                            {% if idx == total - 1 %}disabled{% endif %}
+                            title="Omlaag">&darr;</button>
+                </form>
             </td>
             <td>
                 <form method="post"
@@ -84,6 +137,23 @@
                 </form>
             </td>
         </tr>
+        {% endfor %}
+        {% for f in project.bpmn_files %}
+          {% if f not in order %}
+          <tr>
+            <td>-</td>
+            <td><code>{{ f }}</code> <small>(niet in volgorde)</small></td>
+            <td></td><td></td>
+            <td>
+                <form method="post"
+                      action="{{ url_for('project_remove_bpmn', pid=project.id) }}"
+                      style="display:inline;">
+                    <input type="hidden" name="target" value="{{ f }}">
+                    <button type="submit" class="btn-danger">Verwijder</button>
+                </form>
+            </td>
+          </tr>
+          {% endif %}
         {% endfor %}
         </tbody>
     </table>
