@@ -455,6 +455,73 @@ def _extract_flows(parent: ET.Element) -> tuple[list[BpmnElement],
 
 # --- Public API ------------------------------------------------------------
 
+def _parse_di_bounds(root: ET.Element) -> dict[str, tuple[float, float, float, float]]:
+    """Lees DI-bounds per BPMN-element uit <bpmndi:BPMNShape>.
+
+    Return: { bpmnElement_id: (x, y, width, height) }.
+    Gebruikt als geometrische fallback om lane-membership te bepalen
+    wanneer <bpmn:flowNodeRef> ontbreekt (sommige tools schrijven dat
+    niet uit, bv. Visio-export).
+    """
+    bounds_by_ref: dict[str, tuple[float, float, float, float]] = {}
+    for shape in root.iter(f"{{{NS['bpmndi']}}}BPMNShape"):
+        ref = _attr(shape, "bpmnElement")
+        if not ref:
+            continue
+        b = shape.find("dc:Bounds", NS)
+        if b is None:
+            continue
+        try:
+            x = float(_attr(b, "x", "0"))
+            y = float(_attr(b, "y", "0"))
+            w = float(_attr(b, "width", "0"))
+            h = float(_attr(b, "height", "0"))
+        except ValueError:
+            continue
+        bounds_by_ref[ref] = (x, y, w, h)
+    return bounds_by_ref
+
+
+def _geometric_lane_fallback(
+    tasks: list[BpmnElement],
+    gateways: list[BpmnElement],
+    events: list[BpmnElement],
+    lanes: list[BpmnElement],
+    bounds: dict[str, tuple[float, float, float, float]],
+) -> int:
+    """Voor elk flow-element zonder lane_id: probeer geometrisch te
+    bepalen in welke lane het staat (center binnen lane-bounds).
+
+    Return: aantal elementen dat alsnog een lane kreeg.
+    """
+    # Lanes moeten bounds hebben om dit te doen
+    lane_bounds = [(l, bounds.get(l.id)) for l in lanes if bounds.get(l.id)]
+    if not lane_bounds:
+        return 0
+    fixed = 0
+    for lst in (tasks, gateways, events):
+        for el in lst:
+            if el.lane_id:
+                continue
+            b = bounds.get(el.id)
+            if not b:
+                continue
+            cx, cy = b[0] + b[2] / 2, b[1] + b[3] / 2
+            for lane, lb in lane_bounds:
+                lx, ly, lw, lh = lb
+                if lx <= cx <= lx + lw and ly <= cy <= ly + lh:
+                    el.lane_id = lane.id
+                    # Bijwerken van lane.flow_node_refs zodat downstream
+                    # code (review-checks) ook weet dat deze taak in de
+                    # lane zit.
+                    refs = lane.attributes.setdefault("flow_node_refs", [])
+                    if el.id not in refs:
+                        refs.append(el.id)
+                    fixed += 1
+                    break
+    return fixed
+
+
 def parse_bpmn(path: str | Path) -> ParsedBpmn:
     """Parse a single .bpmn file into a ParsedBpmn structure."""
     path = Path(path)
@@ -462,6 +529,8 @@ def parse_bpmn(path: str | Path) -> ParsedBpmn:
     root = tree.getroot()
 
     parsed = ParsedBpmn(source_file=path.name)
+    # DI-bounds vooraf inlezen (voor geometric lane fallback verderop)
+    di_bounds = _parse_di_bounds(root)
 
     # Collaboration: pools (participants), message flows, top-level annotations
     for collab in root.iter(f"{{{NS['bpmn']}}}collaboration"):
@@ -510,6 +579,15 @@ def parse_bpmn(path: str | Path) -> ParsedBpmn:
 
     # data stores live at root or process level
     parsed.data_stores.extend(_extract_data_stores(root))
+
+    # Geometrische fallback voor tasks/gateways/events zonder lane:
+    # als <bpmn:flowNodeRef> ontbreekt maar de shape-bounds binnen een lane
+    # liggen, alsnog de koppeling maken.
+    if di_bounds and parsed.lanes:
+        _geometric_lane_fallback(
+            parsed.tasks, parsed.gateways, parsed.events,
+            parsed.lanes, di_bounds,
+        )
 
     return parsed
 
