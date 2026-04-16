@@ -805,20 +805,61 @@
                     canvas.scrollToElement(el, { top: 200, bottom: 200, left: 200, right: 200 });
                 });
             });
-            // Toepassen-knoppen — verschillende dialoogs per regel
+            // Toepassen-knoppen — dispatch per rule
             listEl.querySelectorAll('.btn-apply').forEach(function (btn) {
                 btn.addEventListener('click', function (ev) {
                     ev.stopPropagation();
                     var idx = parseInt(btn.getAttribute('data-fidx'), 10);
                     var f = relevant[idx];
                     if (!f) return;
-                    if (f.rule === 'R008') {
-                        openR008Dialog(f, fileName);
-                    } else {
-                        openApplyDialog(f, fileName);
-                    }
+                    dispatchApply(f, fileName);
                 });
             });
+        }
+    }
+
+    // --- Generic dispatcher: kies juiste dialog per rule ---
+    function dispatchApply(f, fileName) {
+        switch (f.rule) {
+            case 'R008':
+                return openR008Dialog(f, fileName);
+            case 'R101':
+                return openR101Dialog(f, fileName);
+            case 'R007':
+                return openConfirmDialog(f, fileName, {
+                    title: 'Gateway verwijderen',
+                    body:  'Gateway <strong>' + escapeHtml(f.element_name || f.element_id) +
+                           '</strong> heeft slechts 1 uitgaande flow en is overbodig. ' +
+                           'De inkomende flow wordt direct doorgezet; gateway + '+
+                           'uitgaande flow worden verwijderd.',
+                    params: { gateway_id: f.element_id }
+                });
+            case 'R102':
+                var p = f.fix_params || {};
+                return openConfirmDialog(f, fileName, {
+                    title: 'DataStore toevoegen',
+                    body:  'Taak <strong>' + escapeHtml(f.element_name) +
+                           '</strong> noemt systeem <code>' + escapeHtml(p.system_name || '') +
+                           '</code>. Een <code>&lt;bpmn:dataStoreReference name="' +
+                           escapeHtml(p.system_name || '') + '"&gt;</code> wordt toegevoegd ' +
+                           'met ' + escapeHtml(p.action_type || 'READ') +
+                           '-association op deze taak.',
+                    params: {
+                        task_id: p.task_id || f.element_id,
+                        system_name: p.system_name,
+                        action_type: p.action_type || 'READ',
+                    }
+                });
+            case 'R009':
+            case 'R010':
+            case 'R103':
+                return openRenameDialog(f, fileName);
+            case 'R001':
+                return openPickLaneDialog(f, fileName);
+            case 'R006':
+                return openLinkTaskDialog(f, fileName);
+            default:
+                alert('Voor regel ' + f.rule + ' is nog geen Toepassen-dialog.');
         }
     }
 
@@ -899,8 +940,130 @@
         return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
-    // --- Apply dialog ---
-    function openApplyDialog(f, fileName) {
+    // --- Generic confirm-only dialog (voor R007, R102 die 1-klik zijn) ---
+    function openConfirmDialog(f, fileName, opts) {
+        var dlg = ensureDialog();
+        dlg.innerHTML =
+          '<div class="modal">' +
+            '<h3>' + escapeHtml(opts.title) + '</h3>' +
+            '<p><code>' + escapeHtml(f.rule) + '</code> ' +
+               '<em>' + escapeHtml(f.rule_title || '') + '</em> &middot; ' +
+               '<code>' + escapeHtml(fileName) + '</code></p>' +
+            '<p>' + opts.body + '</p>' +
+            '<p class="modal-warn">Origineel blijft v1. Fix wordt opgeslagen als nieuwe versie.</p>' +
+            '<div class="modal-actions">' +
+              '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
+              '<button type="button" class="btn-primary" id="apply-confirm">Bevestig &amp; pas toe</button>' +
+            '</div>' +
+          '</div>';
+        dlg.style.display = 'flex';
+        wireApply(dlg, fileName, f.rule, opts.params);
+    }
+
+    // --- Rename dialog (R009, R010, R103) ---
+    function openRenameDialog(f, fileName) {
+        var dlg = ensureDialog();
+        var fp = f.fix_params || {};
+        var current = fp.current || f.element_name || '';
+        dlg.innerHTML =
+          '<div class="modal">' +
+            '<h3>Hernoemen</h3>' +
+            '<p><code>' + escapeHtml(f.rule) + '</code> ' +
+               '<em>' + escapeHtml(f.rule_title || '') + '</em> &middot; ' +
+               '<code>' + escapeHtml(f.element_id) + '</code> in <code>' +
+               escapeHtml(fileName) + '</code></p>' +
+            '<label class="row">' + escapeHtml(fp.label || 'Nieuwe naam') +
+              '<input type="text" id="rename-input" value="' + escapeAttr(current) +
+              '" placeholder="' + escapeAttr(fp.placeholder || '') + '" style="width:100%;">' +
+            '</label>' +
+            '<p class="modal-warn">Origineel blijft v1. Fix wordt opgeslagen als nieuwe versie.</p>' +
+            '<div class="modal-actions">' +
+              '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
+              '<button type="button" class="btn-primary" id="apply-confirm">Bevestig &amp; pas toe</button>' +
+            '</div>' +
+          '</div>';
+        dlg.style.display = 'flex';
+        setTimeout(function () { document.getElementById('rename-input').focus(); }, 50);
+        wireApply(dlg, fileName, f.rule, null, function () {
+            var nm = (document.getElementById('rename-input').value || '').trim();
+            if (!nm) { alert('Geef een naam op'); return null; }
+            return { element_id: f.element_id, new_name: nm };
+        });
+    }
+
+    // --- R001: pick lane ---
+    function openPickLaneDialog(f, fileName) {
+        var dlg = ensureDialog();
+        var lanes = (f.fix_params || {}).lanes || [];
+        var opts = lanes.map(function (l, i) {
+            return '<label class="flow-option">' +
+                     '<input type="radio" name="lane-pick" value="' + escapeAttr(l.id) + '"' +
+                     (i === 0 ? ' checked' : '') + '>' +
+                     '<span><strong>' + escapeHtml(l.name) + '</strong> ' +
+                       '<small><code>' + escapeHtml(l.id) + '</code></small></span>' +
+                   '</label>';
+        }).join('');
+        dlg.innerHTML =
+          '<div class="modal">' +
+            '<h3>Lane kiezen</h3>' +
+            '<p>Taak <strong>' + escapeHtml(f.element_name) + '</strong> ' +
+               '(<code>' + escapeHtml(f.element_id) + '</code>) zit niet in een lane.</p>' +
+            '<div class="flow-options">' + (opts || '<em>Geen lanes aanwezig in dit proces.</em>') + '</div>' +
+            '<p class="modal-warn">Origineel blijft v1. Fix wordt opgeslagen als nieuwe versie.</p>' +
+            '<div class="modal-actions">' +
+              '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
+              '<button type="button" class="btn-primary" id="apply-confirm"' +
+                 (lanes.length ? '' : ' disabled') +
+                 '>Bevestig &amp; pas toe</button>' +
+            '</div>' +
+          '</div>';
+        dlg.style.display = 'flex';
+        wireApply(dlg, fileName, f.rule, null, function () {
+            var picked = dlg.querySelector('input[name="lane-pick"]:checked');
+            if (!picked) { alert('Kies een lane'); return null; }
+            return { element_id: f.element_id, lane_id: picked.value };
+        });
+    }
+
+    // --- R006: link dataObject to a task ---
+    function openLinkTaskDialog(f, fileName) {
+        var dlg = ensureDialog();
+        var tasks = (f.fix_params || {}).tasks || [];
+        var taskOpts = tasks.map(function (t, i) {
+            return '<option value="' + escapeAttr(t.id) + '"' +
+                   (i === 0 ? ' selected' : '') + '>' +
+                   escapeHtml(t.name) + ' (' + escapeHtml(t.id) + ')</option>';
+        }).join('');
+        dlg.innerHTML =
+          '<div class="modal">' +
+            '<h3>DataObject koppelen aan taak</h3>' +
+            '<p>DataObject <strong>' + escapeHtml(f.element_name || f.element_id) + '</strong> is niet aan een taak gekoppeld.</p>' +
+            '<label class="row">Taak:' +
+              '<select id="link-task" style="width:100%;">' + taskOpts + '</select>' +
+            '</label>' +
+            '<label class="row">Richting:' +
+              '<select id="link-direction" style="width:100%;">' +
+                '<option value="input">Input (taak leest het object)</option>' +
+                '<option value="output">Output (taak schrijft het object)</option>' +
+              '</select>' +
+            '</label>' +
+            '<p class="modal-warn">Origineel blijft v1. Fix wordt opgeslagen als nieuwe versie.</p>' +
+            '<div class="modal-actions">' +
+              '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
+              '<button type="button" class="btn-primary" id="apply-confirm">Bevestig &amp; pas toe</button>' +
+            '</div>' +
+          '</div>';
+        dlg.style.display = 'flex';
+        wireApply(dlg, fileName, f.rule, null, function () {
+            var tid = document.getElementById('link-task').value;
+            var dir = document.getElementById('link-direction').value;
+            if (!tid) { alert('Kies een taak'); return null; }
+            return { dataobject_id: f.element_id, task_id: tid, direction: dir };
+        });
+    }
+
+    // --- Dialog plumbing ---
+    function ensureDialog() {
         var dlg = document.getElementById('apply-dialog');
         if (!dlg) {
             dlg = document.createElement('div');
@@ -908,64 +1071,79 @@
             dlg.className = 'modal-backdrop';
             document.body.appendChild(dlg);
         }
+        return dlg;
+    }
+
+    function wireApply(dlg, fileName, rule, fixedParams, paramsGetter) {
+        document.getElementById('apply-cancel').onclick = function () {
+            dlg.style.display = 'none';
+        };
+        document.getElementById('apply-confirm').onclick = function () {
+            var btn = document.getElementById('apply-confirm');
+            var params = fixedParams || (paramsGetter ? paramsGetter() : null);
+            if (params === null) return;  // getter annuleerde
+            if (params === undefined) params = {};
+            btn.disabled = true; btn.textContent = 'Bezig...';
+            fetch(urlBase + '/apply-fix', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ rule: rule, file: fileName, params: params })
+            }).then(function (r) {
+                var ct = r.headers.get('content-type') || '';
+                if (!ct.includes('application/json')) {
+                    return r.text().then(function (t) {
+                        throw new Error('Server gaf geen JSON terug (status ' + r.status +
+                                        '). Eerste 200 tekens: ' + t.slice(0, 200));
+                    });
+                }
+                return r.json();
+            }).then(function (res) {
+                if (res.error) {
+                    alert('Fout: ' + res.error);
+                    btn.disabled = false; btn.textContent = 'Bevestig & pas toe';
+                    return;
+                }
+                dlg.style.display = 'none';
+                window.location.reload();
+            }).catch(function (e) {
+                alert(String(e && e.message || e));
+                btn.disabled = false; btn.textContent = 'Bevestig & pas toe';
+            });
+        };
+    }
+
+    // --- R101 dialog (hernoemd van openApplyDialog) ---
+    function openR101Dialog(f, fileName) {
+        var dlg = ensureDialog();
         var attrs = (f.suggested_attributes || []).map(function (a) {
             return '<li><code>' + escapeHtml(a.name) + '</code> : ' + escapeHtml(a.type || 'string') +
                    (a.required ? ' <em>(verplicht)</em>' : '') + '</li>';
-        }).join('') || '<li class="muted">Geen attributen gedefinieerd. <a href="/definitions" target="_blank">Definieer in dictionary</a></li>';
+        }).join('') || '<li class="muted">Geen attributen. <a href="/definitions" target="_blank">Definieer in dictionary</a></li>';
         var actionNL = { READ: 'Opzoeken (dataInputAssociation)',
                          WRITE: 'Schrijven (dataOutputAssociation)',
                          UPDATE: 'Wijzigen (input + output)' }[f.action_type] || f.action_type;
         dlg.innerHTML =
           '<div class="modal">' +
-            '<h3>Toepassen: dataObject toevoegen</h3>' +
-            '<p>Bestand: <code>' + escapeHtml(fileName) + '</code><br>' +
-               'Taak: <strong>' + escapeHtml(f.element_name) + '</strong> (<code>' + escapeHtml(f.element_id) + '</code>)</p>' +
+            '<h3>DataObject toevoegen</h3>' +
+            '<p><code>R101</code> &middot; <code>' + escapeHtml(fileName) + '</code><br>' +
+               'Taak: <strong>' + escapeHtml(f.element_name) + '</strong></p>' +
             '<p><strong>Object:</strong> ' + escapeHtml(f.suggested_object) + '<br>' +
                '<strong>Actie:</strong> ' + escapeHtml(actionNL) + '</p>' +
-            '<p><strong>Attributen (opgenomen in &lt;bpmn:documentation&gt;):</strong></p>' +
+            '<p><strong>Attributen (in &lt;bpmn:documentation&gt;):</strong></p>' +
             '<ul class="attr-preview">' + attrs + '</ul>' +
-            '<p class="modal-warn">De originele upload blijft bewaard als versie v1. De fix wordt opgeslagen als nieuwe versie.</p>' +
+            '<p class="modal-warn">Origineel blijft v1. Fix wordt opgeslagen als nieuwe versie.</p>' +
             '<div class="modal-actions">' +
               '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
               '<button type="button" class="btn-primary" id="apply-confirm">Bevestig &amp; pas toe</button>' +
             '</div>' +
           '</div>';
         dlg.style.display = 'flex';
-
-        document.getElementById('apply-cancel').onclick = function () {
-            dlg.style.display = 'none';
-        };
-        document.getElementById('apply-confirm').onclick = function () {
-            var btn = document.getElementById('apply-confirm');
-            btn.disabled = true;
-            btn.textContent = 'Bezig...';
-            fetch(urlBase + '/apply', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    file: fileName,
-                    task_id: f.element_id,
-                    object: f.suggested_object,
-                    action: f.action_type || 'WRITE',
-                    attributes: f.suggested_attributes || [],
-                })
-            }).then(function (r) { return r.json(); })
-              .then(function (res) {
-                if (res.error) {
-                    alert('Fout: ' + res.error);
-                    btn.disabled = false;
-                    btn.textContent = 'Bevestig & pas toe';
-                    return;
-                }
-                dlg.style.display = 'none';
-                window.location.reload();
-              })
-              .catch(function (e) {
-                alert('Netwerk-fout: ' + e);
-                btn.disabled = false;
-                btn.textContent = 'Bevestig & pas toe';
-              });
-        };
+        wireApply(dlg, fileName, 'R101', {
+            task_id: f.element_id,
+            object_name: f.suggested_object,
+            action_type: f.action_type || 'WRITE',
+            attributes: f.suggested_attributes || [],
+        });
     }
 
     function loadBpmn(name) {

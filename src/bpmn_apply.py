@@ -239,6 +239,123 @@ def _find_containing_process_or_root(
     return p if p is not None else root
 
 
+def _rename_element_in_tree(
+    root: ET.Element, element_id: str, new_name: str
+) -> bool:
+    """In-place: zet/overschrijf het `name`-attribuut op een element."""
+    el = _find_element_by_id(root, element_id)
+    if el is None:
+        return False
+    el.set("name", new_name)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Unified dispatch for all single-finding fixes
+# ---------------------------------------------------------------------------
+
+def apply_fix(
+    bpmn_path: Path,
+    rule: str,
+    params: dict,
+) -> tuple[bool, str]:
+    """Centrale dispatch: voer een fix uit op bpmn_path op basis van rule-id.
+
+    Returns (ok, description). Bij False is description de foutmelding.
+    """
+    tree = ET.parse(bpmn_path)
+    root = tree.getroot()
+    desc = ""
+
+    try:
+        if rule == "R007":
+            # Params: {gateway_id}
+            gw_id = params.get("gateway_id") or params.get("element_id", "")
+            if not gw_id:
+                return False, "gateway_id ontbreekt"
+            if not _remove_gateway_in_tree(root, gw_id):
+                return False, f"Gateway {gw_id} niet gevonden of geen degenerate flow"
+            desc = f"Overbodige gateway {gw_id} verwijderd"
+
+        elif rule in ("R009", "R010", "R103"):
+            # Params: {element_id, new_name}
+            el_id = params.get("element_id", "")
+            nm = (params.get("new_name") or "").strip()
+            if not (el_id and nm):
+                return False, "element_id of new_name ontbreekt"
+            if not _rename_element_in_tree(root, el_id, nm):
+                return False, f"Element {el_id} niet gevonden"
+            desc = f"{el_id} hernoemd naar '{nm}'"
+
+        elif rule == "R102":
+            # Params: {task_id, system_name, action_type}
+            task_id = params.get("task_id", "")
+            system = (params.get("system_name") or "").strip()
+            action = (params.get("action_type") or "READ").upper()
+            if not (task_id and system):
+                return False, "task_id of system_name ontbreekt"
+            if not _add_datastore_in_tree(root, task_id, system, action):
+                return False, f"Task {task_id} niet gevonden"
+            desc = f"<bpmn:dataStoreReference name=\"{system}\"> toegevoegd op {task_id}"
+
+        elif rule == "R101":
+            # Params: {task_id, object_name, action_type, attributes}
+            task_id = params.get("task_id", "")
+            obj = (params.get("object_name") or params.get("object") or "").strip()
+            action = (params.get("action_type") or params.get("action") or "WRITE").upper()
+            attrs = params.get("attributes") or []
+            if not (task_id and obj):
+                return False, "task_id of object_name ontbreekt"
+            if not _add_dataobject_in_tree(root, task_id, obj, action, attrs):
+                return False, f"Task {task_id} niet gevonden"
+            desc = (f"<bpmn:dataObject name=\"{obj}\"> + {action}-association "
+                    f"toegevoegd op {task_id}")
+
+        elif rule == "R001":
+            # Params: {element_id, lane_id}
+            el_id = params.get("element_id", "")
+            lane_id = params.get("lane_id", "")
+            if not (el_id and lane_id):
+                return False, "element_id of lane_id ontbreekt"
+            lane = _find_element_by_id(root, lane_id)
+            if lane is None:
+                return False, f"Lane {lane_id} niet gevonden"
+            # Voeg flowNodeRef toe als niet al aanwezig
+            existing = [ref.text for ref in lane.findall(_qname("flowNodeRef"))]
+            if el_id not in existing:
+                ref = ET.SubElement(lane, _qname("flowNodeRef"))
+                ref.text = el_id
+            desc = f"{el_id} toegewezen aan lane {lane_id}"
+
+        elif rule == "R006":
+            # Params: {dataobject_id, task_id, direction}
+            do_id = params.get("dataobject_id", "")
+            task_id = params.get("task_id", "")
+            direction = (params.get("direction") or "input").lower()
+            if not (do_id and task_id):
+                return False, "dataobject_id of task_id ontbreekt"
+            task = _find_element_by_id(root, task_id)
+            if task is None:
+                return False, f"Task {task_id} niet gevonden"
+            if direction == "input":
+                ia = ET.SubElement(task, _qname("dataInputAssociation"),
+                                   {"id": _safe_id(do_id, "IA")})
+                ET.SubElement(ia, _qname("sourceRef")).text = do_id
+            else:
+                oa = ET.SubElement(task, _qname("dataOutputAssociation"),
+                                   {"id": _safe_id(do_id, "OA")})
+                ET.SubElement(oa, _qname("targetRef")).text = do_id
+            desc = f"{do_id} gekoppeld aan {task_id} als {direction}"
+
+        else:
+            return False, f"Geen apply-handler voor regel {rule}"
+    except Exception as e:
+        return False, f"Onverwachte fout: {e}"
+
+    tree.write(bpmn_path, xml_declaration=True, encoding="UTF-8")
+    return True, desc
+
+
 def build_improved_preview(
     bpmn_path: Path,
     findings: list[dict],

@@ -503,6 +503,52 @@ def session_apply(sid: str):
     })
 
 
+@app.route("/session/<sid>/apply-fix", methods=["POST"])
+def session_apply_fix(sid: str):
+    """Generieke apply-endpoint: dispatcht op `rule` naar de juiste fix.
+
+    Body: { rule, file, params: {...} }
+    """
+    if not _is_valid_sid(sid):
+        return jsonify({"error": "Ongeldige sessie"}), 404
+    sdir = SESSIONS_DIR / sid
+    if not sdir.exists():
+        return jsonify({"error": "Sessie niet gevonden"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    rule = (payload.get("rule") or "").strip()
+    file_name = secure_filename(payload.get("file", ""))
+    params = payload.get("params") or {}
+
+    if not (rule and file_name):
+        return jsonify({"error": "rule en file verplicht"}), 400
+
+    data_file = sdir / "data" / file_name
+    if not data_file.exists():
+        return jsonify({"error": f"Bestand '{file_name}' niet gevonden"}), 404
+
+    ok, description = bpmn_apply.apply_fix(data_file, rule, params)
+    if not ok:
+        return jsonify({"error": description}), 400
+
+    bpmn_apply.ensure_v1(sdir, file_name)
+    entry = bpmn_apply.add_fix_version(
+        sdir, file_name,
+        patched_bytes=data_file.read_bytes(),
+        description=f"[{rule}] {description}",
+        applied_finding=payload,
+    )
+    try:
+        _regenerate_session_summary(sid)
+    except Exception as e:
+        return jsonify({"error": f"Regeneratie mislukt: {e}"}), 500
+    return jsonify({
+        "ok": True,
+        "new_version": entry,
+        "description": description,
+    })
+
+
 @app.route("/session/<sid>/apply-default-flow", methods=["POST"])
 def session_apply_default_flow(sid: str):
     """R008 fix: zet default-flow op gateway + optioneel conditie-stubs.
