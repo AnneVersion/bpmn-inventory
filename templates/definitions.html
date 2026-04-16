@@ -15,15 +15,20 @@
 
     <div class="defs-layout">
         <aside class="defs-sidebar">
-            <h3>Objecten</h3>
+            <h3>Objecten / Entiteiten</h3>
             <ul class="defs-list" id="defs-list"></ul>
             <button type="button" class="btn-primary" id="new-obj-btn">+ Nieuw object</button>
+
+            <h3 style="margin-top:24px;">Actoren</h3>
+            <ul class="defs-list defs-actors" id="actors-list"></ul>
         </aside>
 
         <section class="defs-editor" id="defs-editor">
             <div class="empty">
-                <h3>Kies links een object</h3>
-                <p>Of klik <em>+ Nieuw object</em> om te starten.</p>
+                <h3>Kies links een object of actor</h3>
+                <p>Objecten = entiteiten zoals Lidmaatschap, Organisatie, Persoon.
+                   Auto-discovered objecten zijn afgeleid uit de <code>&lt;bpmn:dataObject&gt;</code>'s
+                   in je sessies en hebben <em>nog geen attributen</em> — voeg ze toe.</p>
             </div>
         </section>
     </div>
@@ -40,12 +45,20 @@
 
     function renderList() {
         var names = Object.keys(data.objects || {}).sort();
+        var discovered = data.discovered_objects || {};
         listEl.innerHTML = names.map(function (n) {
-            var n_attr = (data.objects[n] || []).length;
+            var attrs = data.objects[n] || [];
+            var n_attr = attrs.length;
+            var isDisc = !!discovered[n];
+            var status = (n_attr === 0 && isDisc)
+                ? '<span class="obj-status obj-discovered" title="Auto-discovered zonder attributen">NEW</span>'
+                : (n_attr === 0
+                    ? '<span class="obj-status obj-empty" title="Geen attributen">0</span>'
+                    : '<span class="obj-status">' + n_attr + ' attr</span>');
             return '<li class="' + (current === n ? 'active' : '') +
                    '" data-n="' + escapeAttr(n) + '">' +
                    '<span class="obj-name">' + escapeHtml(n) + '</span>' +
-                   '<span class="obj-count">' + n_attr + '</span>' +
+                   status +
                    '</li>';
         }).join('');
         Array.from(listEl.children).forEach(function (li) {
@@ -55,6 +68,29 @@
                 renderEditor();
             });
         });
+        renderActors();
+    }
+
+    function renderActors() {
+        var el = document.getElementById('actors-list');
+        if (!el) return;
+        var actors = data.actors || {};
+        var names = Object.keys(actors).sort();
+        if (!names.length) {
+            el.innerHTML = '<li class="muted" style="padding:8px 12px;"><em>Nog geen actoren ontdekt. Upload een BPMN met lanes of externe pools.</em></li>';
+            return;
+        }
+        el.innerHTML = names.map(function (n) {
+            var a = actors[n];
+            var procCount = (a.processes || []).length;
+            return '<li class="actor-li">' +
+                   '<span class="obj-name">' + escapeHtml(n) + '</span>' +
+                   '<span class="obj-status actor-' + escapeAttr(a.type || 'intern') + '">' +
+                     escapeHtml(a.type || 'intern') +
+                   '</span>' +
+                   '<small class="actor-procs">' + procCount + ' proc</small>' +
+                   '</li>';
+        }).join('');
     }
 
     function renderEditor() {
@@ -63,8 +99,33 @@
             return;
         }
         var attrs = data.objects[current] || [];
+        var disc = (data.discovered_objects || {})[current] || {};
+        var discBlock = '';
+        if (disc.discovered) {
+            discBlock =
+              '<div class="disc-block">' +
+                '<strong>Auto-discovered</strong> — dit object is afgeleid uit BPMN-uploads. ' +
+                'Voeg attributen toe om het compleet te maken.' +
+                (disc.aliases && disc.aliases.length
+                  ? '<div><strong>Aliases:</strong> ' +
+                    disc.aliases.map(function (a) { return '<code>' + escapeHtml(a) + '</code>'; }).join(', ') +
+                    '</div>'
+                  : '') +
+                (disc.processes && disc.processes.length
+                  ? '<div><strong>Voorkomt in:</strong> ' +
+                    disc.processes.map(function (p) { return escapeHtml(p); }).join(', ') +
+                    '</div>'
+                  : '') +
+                (disc.source_files && disc.source_files.length
+                  ? '<div><strong>Uit bestanden:</strong> ' +
+                    disc.source_files.map(function (f) { return '<code>' + escapeHtml(f) + '</code>'; }).join(', ') +
+                    '</div>'
+                  : '') +
+              '</div>';
+        }
         editorEl.innerHTML =
             '<div class="def-form">' +
+              discBlock +
               '<div class="row"><label>Objectnaam</label>' +
                 '<input type="text" id="obj-name" value="' + escapeAttr(current) + '"></div>' +
               '<h3>Attributen</h3>' +

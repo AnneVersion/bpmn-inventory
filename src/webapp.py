@@ -216,6 +216,9 @@ def run_pipeline():
         ), 400
 
     model = merge(bpmns)
+    # Auto-discover: actoren + entity-namen uit dit model in user-defs opnemen
+    # (zodat ze meteen in /definities verschijnen voor verdere verrijking).
+    bpmn_defs.auto_discover(ROOT, model, session_id=sid)
     user_defs = bpmn_defs.load(ROOT)
     findings = review(model, user_defs=user_defs)
     # Verrijk findings met cross-BPMN analyse uit het datamodel
@@ -374,6 +377,7 @@ def _regenerate_session_summary(sid: str) -> dict:
         raise ValueError("Geen BPMNs meer in deze sessie")
 
     model = merge(bpmns)
+    bpmn_defs.auto_discover(ROOT, model, session_id=sid)
     user_defs = bpmn_defs.load(ROOT)
     findings = review(model, user_defs=user_defs)
     erd = _build_smart_erd(model, user_defs)
