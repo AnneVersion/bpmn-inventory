@@ -1243,40 +1243,101 @@
         if (!improvedViewer) return;
         status2.textContent = 'Preview laden: ' + name;
 
-        fetch(urlBase + '/improved/' + encodeURIComponent(name))
+        // Parallelle fetches zodat we na import weten welke changes er zijn
+        var changesPromise = fetch(urlBase + '/improved-summary/' + encodeURIComponent(name))
+            .then(function (r) { return r.json(); });
+
+        var xmlPromise = fetch(urlBase + '/improved/' + encodeURIComponent(name))
             .then(function (r) { return r.text(); })
             .then(function (xml) {
-                improvedViewer.importXML(xml).then(function () {
+                return improvedViewer.importXML(xml).then(function () {
                     improvedViewer.get('canvas').zoom('fit-viewport');
                     status2.textContent = 'Preview geladen.';
-                }).catch(function (err) {
-                    status2.textContent = 'Preview-fout: ' + (err.message || err);
                 });
-            })
-            .catch(function (err) {
-                status2.textContent = 'Kan preview niet ophalen: ' + err;
             });
 
-        fetch(urlBase + '/improved-summary/' + encodeURIComponent(name))
-            .then(function (r) { return r.json(); })
-            .then(function (res) {
-                if (res.error) {
-                    changesEl.innerHTML = '<em>Fout: ' + escapeHtml(res.error) + '</em>';
-                    return;
-                }
-                var cs = res.changes || [];
-                if (!cs.length) {
-                    changesEl.innerHTML = '<em>Geen safe auto-fixes van toepassing voor dit bestand.</em>';
-                    return;
-                }
-                changesEl.innerHTML =
-                    '<strong>' + cs.length + ' wijziging(en) in preview:</strong>' +
-                    '<ul>' + cs.map(function (c) {
-                        return '<li><code>' + escapeHtml(c.rule) + '</code> ' +
-                               '<strong>' + escapeHtml(c.element) + '</strong>: ' +
-                               escapeHtml(c.description) + '</li>';
-                    }).join('') + '</ul>';
+        Promise.all([xmlPromise, changesPromise]).then(function (arr) {
+            var res = arr[1];
+            var cs = (res && res.changes) || [];
+            renderImprovedChanges(cs, res && res.error);
+            applyImprovedHighlights(cs);
+        }).catch(function (err) {
+            status2.textContent = 'Preview-fout: ' + (err.message || err);
+            changesEl.innerHTML = '<em>Fout: ' + escapeHtml(String(err)) + '</em>';
+        });
+    }
+
+    function renderImprovedChanges(cs, err) {
+        var changesEl = document.getElementById('improved-changes');
+        if (err) {
+            changesEl.innerHTML = '<em>Fout: ' + escapeHtml(err) + '</em>';
+            return;
+        }
+        if (!cs.length) {
+            changesEl.innerHTML = '<em>Geen safe auto-fixes van toepassing voor dit bestand.</em>';
+            return;
+        }
+        // Groepeer per change_type
+        var added   = cs.filter(function (c) { return c.change_type === 'added'; });
+        var removed = cs.filter(function (c) { return c.change_type === 'removed'; });
+        var other   = cs.filter(function (c) { return !c.change_type; });
+        var html = '<strong>' + cs.length + ' wijziging(en) in preview:</strong><ul>';
+        function row(c, sign) {
+            return '<li><span class="diff-sign diff-' + (c.change_type || 'other') + '">' +
+                   sign + '</span> <code>' + escapeHtml(c.rule) + '</code> ' +
+                   '<strong>' + escapeHtml(c.element) + '</strong>: ' +
+                   escapeHtml(c.description) + '</li>';
+        }
+        added.forEach(function (c) { html += row(c, '+'); });
+        removed.forEach(function (c) { html += row(c, '−'); });
+        other.forEach(function (c) { html += row(c, '~'); });
+        changesEl.innerHTML = html + '</ul>';
+    }
+
+    var improvedOverlayIds = [];
+    function applyImprovedHighlights(changes) {
+        if (!improvedViewer) return;
+        var canvas = improvedViewer.get('canvas');
+        var reg    = improvedViewer.get('elementRegistry');
+        var ovl    = improvedViewer.get('overlays');
+
+        // Clear vorige highlights
+        improvedOverlayIds.forEach(function (id) {
+            try { ovl.remove(id); } catch (e) {}
+        });
+        improvedOverlayIds = [];
+        reg.forEach(function (el) {
+            ['bpmn-added', 'bpmn-removed']
+              .forEach(function (c) {
+                if (canvas.hasMarker(el.id, c)) canvas.removeMarker(el.id, c);
+              });
+        });
+
+        // Groepeer labels per element
+        var byElem = {};
+        changes.forEach(function (c) {
+            var id = c.highlight_task_id;
+            if (!id || !reg.get(id)) return;
+            (byElem[id] = byElem[id] || []).push(c);
+        });
+
+        Object.keys(byElem).forEach(function (id) {
+            canvas.addMarker(id, 'bpmn-added');
+            var list = byElem[id];
+            var wrap = document.createElement('div');
+            wrap.className = 'bpmn-added-overlay';
+            wrap.innerHTML = list.map(function (c) {
+                return '<div class="bao-item" title="' + escapeAttr(c.description) + '">' +
+                         '<span class="bao-sign">+</span>' +
+                         escapeHtml(c.highlight_label || c.description) +
+                       '</div>';
+            }).join('');
+            var oid = ovl.add(id, 'improved-add', {
+                position: { bottom: -8, right: 0 },
+                html: wrap,
             });
+            improvedOverlayIds.push(oid);
+        });
     }
 
     function fitBpmn() {
