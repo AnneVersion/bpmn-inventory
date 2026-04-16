@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Documenten - {{ project.name }}{% endblock %}
+
+{% block content %}
+<section>
+    <a href="{{ url_for('project_detail', pid=project.id) }}" class="btn-secondary">&larr; Naar project</a>
+    <h1>Documenten van {{ project.name }}</h1>
+    <p class="lead">
+        Overzicht van alle geüploade <code>.docx</code>- / <code>.pptx</code>-bestanden met
+        datum van verwerking, gegenereerde BPMNs en extracted entities.
+    </p>
+</section>
+
+{% if not docs %}
+<div class="empty">
+    <h3>Nog geen documenten</h3>
+    <p>Upload een .docx of .pptx vanaf de project-detailpagina.</p>
+</div>
+{% else %}
+<section>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Bestand</th>
+                <th>Type</th>
+                <th>Verwerkt op</th>
+                <th>Gegenereerde BPMNs</th>
+                <th>Entities</th>
+                <th>Download</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for d in docs %}
+        <tr>
+            <td>
+                <strong>{{ d.source_file }}</strong><br>
+                <small>id: <code>{{ d.doc_id }}</code></small>
+            </td>
+            <td><span class="badge">{{ d.kind|upper }}</span></td>
+            <td>
+                <small>{{ d.processed_at.replace('T', ' ') }}</small>
+            </td>
+            <td>
+                {% if d.generated_bpmns %}
+                <ul class="compact-list">
+                {% for g in d.generated_bpmns %}
+                    <li>
+                        <code>{{ g.filename }}</code>
+                        &middot; <em>{{ g.process_name }}</em>
+                        &middot; <strong>{{ g.task_count }}</strong> tasks
+                    </li>
+                {% endfor %}
+                </ul>
+                {% else %}
+                <small><em>Geen</em></small>
+                {% endif %}
+            </td>
+            <td>
+                {% if d.extracted_entities %}
+                <div class="badge-row">
+                {% for ent_name, attrs in d.extracted_entities.items() %}
+                    <span class="chip" title="Attributen: {{ attrs|join(', ') if attrs else '(geen)' }}">
+                        {{ ent_name }}
+                        {% if attrs %}<small>&middot; {{ attrs|length }} attr</small>{% endif %}
+                    </span>
+                {% endfor %}
+                </div>
+                {% else %}
+                <small><em>Geen</em></small>
+                {% endif %}
+            </td>
+            <td>
+                <a href="{{ url_for('project_doc_raw', pid=project.id, doc_id=d.doc_id) }}"
+                   class="btn-secondary" style="font-size:.8rem; padding:4px 10px;">
+                    Download
+                </a>
+            </td>
+        </tr>
+        {% if d.section_texts %}
+        <tr class="doc-excerpts">
+            <td colspan="6">
+                <details>
+                    <summary>Procesbeschrijvingen ({{ d.section_texts|length }} secties)</summary>
+                    {% for proc_name, text in d.section_texts.items() %}
+                    <div class="doc-excerpt">
+                        <h4>{{ proc_name }}</h4>
+                        <pre class="doc-text">{{ text[:1500] }}{% if text|length > 1500 %}...{% endif %}</pre>
+                    </div>
+                    {% endfor %}
+                </details>
+            </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+{% endblock %}

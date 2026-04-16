@@ -39,6 +39,7 @@ import bpmn_apply                                        # noqa: E402
 import bpmn_defs                                         # noqa: E402
 import bpmn_erd                                          # noqa: E402
 import bpmn_project                                      # noqa: E402
+import bpmn_docs                                         # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -617,6 +618,113 @@ def project_download(pid: str, filename: str):
     if not out_dir.exists():
         abort(404)
     return send_from_directory(str(out_dir), filename, as_attachment=True)
+
+
+@app.route("/project/<pid>/upload-doc", methods=["POST"])
+def project_upload_doc(pid: str):
+    """Upload .docx of .pptx met procesbeschrijving. Parseer de tekst,
+    genereer BPMNs per sectie, extracteer entities en sla een audit-
+    entry op."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+
+    f = request.files.get("doc_file")
+    if not f or not f.filename:
+        return "Geen bestand geupload.", 400
+    ext = Path(f.filename).suffix.lower()
+    if ext not in (".docx", ".pptx"):
+        return "Alleen .docx of .pptx worden ondersteund.", 400
+
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    doc_id = uuid.uuid4().hex[:12]
+    sub = bpmn_docs.doc_subdir(pdir, doc_id)
+    dest = sub / f"original{ext}"
+    f.save(str(dest))
+
+    try:
+        parsed, entities, bpmns, result = bpmn_docs.process_document(
+            dest, doc_id
+        )
+    except Exception as e:
+        return f"Verwerking mislukt: {e}", 500
+
+    # Genereerde BPMN's opslaan in project/data/ en per-bestand v1 registreren
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    for filename, xml_bytes, tasks_meta, _proc_name in bpmns:
+        dest_bpmn = data_dir / filename
+        dest_bpmn.write_bytes(xml_bytes)
+        bpmn_apply.ensure_v1(pdir, filename)
+
+    # Update bpmn_order: voeg nieuwe files onderaan toe
+    order = list(meta.get("bpmn_order", []))
+    for filename, _, _, _ in bpmns:
+        if filename not in order:
+            order.append(filename)
+    meta["bpmn_order"] = order
+    bpmn_project.save(ROOT, meta)
+
+    # Entities als auto-discovered in global definitions
+    # (werkt via bpmn_defs — we doen een pseudo-model-discovery)
+    defs_data = bpmn_defs.load(ROOT)
+    defs_data.setdefault("objects", {})
+    defs_data.setdefault("discovered_objects", {})
+    for ent_name, attrs in entities.entities.items():
+        attr_list = sorted(attrs)
+        # Alleen toevoegen als object nog niet bestaat; anders behoud user-attrs
+        if ent_name not in defs_data["objects"]:
+            defs_data["objects"][ent_name] = []
+        # Discovered-metadata bijwerken
+        entry = defs_data["discovered_objects"].get(ent_name, {
+            "aliases": [], "processes": [], "source_files": [],
+            "discovered": True,
+        })
+        entry["discovered"] = True
+        entry["source_files"] = sorted(set(entry.get("source_files", []))
+                                        | {f.filename})
+        entry["from_docs"] = sorted(set(entry.get("from_docs", []))
+                                     | {f.filename})
+        entry["suggested_attributes"] = sorted(
+            set(entry.get("suggested_attributes", [])) | set(attr_list)
+        )
+        defs_data["discovered_objects"][ent_name] = entry
+    bpmn_defs.save(ROOT, defs_data)
+
+    # Audit-log
+    bpmn_docs.append_docs_log(pdir, result.to_dict())
+
+    # Redirect naar project detail met hint
+    return redirect(url_for("project_detail", pid=pid) + "?doc_processed=1")
+
+
+@app.route("/project/<pid>/docs")
+def project_docs(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    log = bpmn_docs.load_docs_log(pdir)
+    return render_template("docs.html", project=meta, docs=log)
+
+
+@app.route("/project/<pid>/doc/<doc_id>/raw")
+def project_doc_raw(pid: str, doc_id: str):
+    """Download het originele document."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    sub = pdir / "documents" / doc_id
+    if not sub.exists():
+        abort(404)
+    # Zoek original.*
+    for p in sub.iterdir():
+        if p.name.startswith("original"):
+            return send_from_directory(str(sub), p.name, as_attachment=True)
+    abort(404)
 
 
 @app.route("/project/<pid>/auto-order", methods=["POST"])

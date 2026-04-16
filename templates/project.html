@@ -37,6 +37,39 @@
     </form>
 </section>
 
+<section class="project-upload">
+    <h2>Document uploaden (.docx / .pptx)</h2>
+    <p class="viewer-hint">
+        Upload een Word- of PowerPoint-bestand met een procesbeschrijving.
+        De tool genereert automatisch BPMNs per sectie, extraheert entiteiten
+        en attributen, en legt alles vast onder
+        <a href="{{ url_for('project_docs', pid=project.id) }}">Documenten</a>.
+    </p>
+    {% if request.args.get('doc_processed') %}
+    <div class="alert" style="background:#ecfdf5; border-color:#6ee7b7; color:#065f46;">
+        Document verwerkt. De gegenereerde BPMNs staan nu bij "BPMNs in dit
+        project" hieronder.
+    </div>
+    {% endif %}
+    <form method="post" enctype="multipart/form-data"
+          action="{{ url_for('project_upload_doc', pid=project.id) }}"
+          class="upload-card">
+        <label class="file-drop">
+            <input type="file" name="doc_file" accept=".docx,.pptx"
+                   onchange="this.form.submit();">
+            <span class="file-drop-text">
+                Kies een <strong>.docx</strong> of <strong>.pptx</strong> bestand
+            </span>
+            <span class="file-drop-hint">
+                Heuristische BPMN-generatie &middot; form submit automatisch
+            </span>
+        </label>
+    </form>
+    <a href="{{ url_for('project_docs', pid=project.id) }}" class="btn-secondary">
+        Alle documenten bekijken &rarr;
+    </a>
+</section>
+
 <section>
     <h2>BPMNs in dit project</h2>
     {% if not project.bpmn_files %}

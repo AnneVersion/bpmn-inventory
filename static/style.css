@@ -275,6 +275,32 @@ a:hover { text-decoration: underline; }
     cursor: not-allowed;
 }
 
+.compact-list {
+    margin: 0; padding-left: 18px; font-size: .82rem;
+}
+.compact-list li { margin: 2px 0; }
+.compact-list code { font-size: .78rem; }
+
+.doc-excerpts td { background: #fafbfe; }
+.doc-excerpt { margin: 10px 0 14px; }
+.doc-excerpt h4 {
+    margin: 0 0 6px;
+    color: var(--primary);
+    font-size: .95rem;
+}
+.doc-text {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    padding: 10px 14px;
+    font-size: .85rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    font-family: inherit;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
 /* ---------- Info cards ---------- */
 .info-grid {
     display: grid;
