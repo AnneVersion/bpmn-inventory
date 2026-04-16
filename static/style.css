@@ -770,6 +770,35 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     background: #f0f3f8;
     border-radius: 4px;
 }
+.v-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    margin: 0 2px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: .78rem;
+    font-family: "Consolas", ui-monospace, monospace;
+}
+.v-tag small { color: var(--muted); font-size: .7rem; }
+.v-tag.v-clickable {
+    cursor: pointer;
+    transition: background .12s;
+}
+.v-tag.v-clickable:hover {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+.v-tag.v-clickable:hover small { color: #cfe0ff; }
+.v-tag.v-active {
+    background: #065f46;
+    color: #fff;
+    border-color: #065f46;
+    font-weight: 700;
+}
+.v-tag.v-active small { color: #a7f3d0; }
+.v-arrow { color: var(--muted); margin: 0 2px; }
 .upload-version-form { display: inline-flex; align-items: center; gap: 6px; }
 .upload-version-label {
     display: inline-flex;
@@ -1050,6 +1079,19 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     text-overflow: ellipsis;
     box-shadow: 0 2px 6px rgba(0,0,0,.25);
     cursor: help;
+    transition: background .12s, transform .12s;
+    user-select: none;
+}
+.bao-item.bao-clickable {
+    cursor: pointer;
+}
+.bao-item.bao-clickable:hover {
+    background: #059669;
+    transform: translateX(-2px);
+}
+.bao-item.bao-clickable::after {
+    content: ' →';
+    opacity: .7;
 }
 .bao-sign {
     display: inline-block;

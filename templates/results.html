@@ -51,10 +51,11 @@
                 <span id="bpmn-version-info" class="version-info"></span>
                 <form method="post" enctype="multipart/form-data"
                       action="{{ summary.url_base }}/upload-version"
-                      class="upload-version-form" id="upload-version-form">
+                      class="upload-version-form" id="upload-version-form"
+                      title="Upload een nieuwere versie van dit bestand. Alle oudere versies blijven bewaard en zijn terug te halen.">
                     <input type="hidden" name="target" id="upload-target" value="">
                     <label class="upload-version-label">
-                        Nieuwe versie:
+                        <span>&#8679;</span> Nieuwere versie uploaden
                         <input type="file" name="bpmn_file" accept=".bpmn,.xml"
                                onchange="this.form.submit();">
                     </label>
@@ -1321,17 +1322,41 @@
             (byElem[id] = byElem[id] || []).push(c);
         });
 
+        var fileName = document.getElementById('bpmn-select')?.value || '';
         Object.keys(byElem).forEach(function (id) {
             canvas.addMarker(id, 'bpmn-added');
             var list = byElem[id];
             var wrap = document.createElement('div');
             wrap.className = 'bpmn-added-overlay';
-            wrap.innerHTML = list.map(function (c) {
-                return '<div class="bao-item" title="' + escapeAttr(c.description) + '">' +
+            wrap.innerHTML = list.map(function (c, i) {
+                return '<div class="bao-item bao-clickable" data-idx="' + i +
+                       '" title="Klik om toe te passen: ' + escapeAttr(c.description) + '">' +
                          '<span class="bao-sign">+</span>' +
                          escapeHtml(c.highlight_label || c.description) +
                        '</div>';
             }).join('');
+
+            // Klik op badge -> open de juiste apply-dialog voor de bijbehorende finding
+            wrap.querySelectorAll('.bao-clickable').forEach(function (el, i) {
+                var change = list[i];
+                el.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    // Zoek de finding die bij deze change hoort
+                    var f = findings.find(function (fi) {
+                        return fi.rule === change.rule &&
+                               fi.source_file === fileName &&
+                               fi.element_id === change.highlight_task_id;
+                    });
+                    if (!f) {
+                        // Fallback: bouw een synthetische finding vanuit change-data
+                        alert('Bijbehorende finding niet gevonden in active review — ' +
+                              'mogelijk al toegepast. Herlaad de pagina.');
+                        return;
+                    }
+                    dispatchApply(f, fileName);
+                });
+            });
+
             var oid = ovl.add(id, 'improved-add', {
                 position: { bottom: -8, right: 0 },
                 html: wrap,
@@ -1350,17 +1375,43 @@
         if (uploadTarget) uploadTarget.value = name;
         if (!info) return;
         var vs = (versions || {})[name] || [];
-        if (vs.length <= 1) {
-            info.textContent = vs.length === 1 ? 'v1 (origineel)' : '';
+        if (vs.length === 0) {
+            info.textContent = '';
             return;
         }
+        if (vs.length === 1) {
+            info.innerHTML = '<span class="v-tag" title="De oorspronkelijke upload is altijd bewaard">v1 (origineel)</span>';
+            return;
+        }
+        var activeVer = vs[vs.length - 1].version;
         var parts = vs.map(function (v) {
-            var label = 'v' + v.version +
-                        (v.action === 'upload' ? ' (upload)' :
-                         v.action === 'fix' ? ' (fix)' : '');
-            return label;
+            var isActive = v.version === activeVer;
+            var actionLabel = v.action === 'upload' ? 'upload'
+                            : v.action === 'fix' ? 'fix'
+                            : v.action;
+            var tip = (v.description || '') + ' — ' + (v.created_at || '');
+            return '<span class="v-tag ' + (isActive ? 'v-active' : 'v-clickable') +
+                   '" data-ver="' + v.version + '" title="' + escapeAttr(tip) + '">' +
+                   'v' + v.version + ' <small>(' + actionLabel + ')</small>' +
+                   '</span>';
         });
-        info.innerHTML = 'Versies: ' + parts.join(' → ') + ' (actief: v' + vs[vs.length - 1].version + ')';
+        info.innerHTML = 'Versies: ' + parts.join(' <span class="v-arrow">→</span> ') +
+                         ' — <strong>actief: v' + activeVer + '</strong>';
+        // Klik op een oudere versie -> activeren
+        info.querySelectorAll('.v-clickable').forEach(function (el) {
+            el.addEventListener('click', function () {
+                var ver = parseInt(el.getAttribute('data-ver'), 10);
+                if (!confirm('Versie v' + ver + ' activeren? Alle huidige wijzigingen worden door v' + ver + ' vervangen (maar blijven bewaard).')) return;
+                fetch(urlBase + '/activate', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ file: name, version: ver })
+                }).then(function (r) { return r.json(); })
+                  .then(function (res) {
+                    if (res.error) { alert('Fout: ' + res.error); return; }
+                    window.location.reload();
+                  });
+            });
+        });
     }
 
     if (select) {
