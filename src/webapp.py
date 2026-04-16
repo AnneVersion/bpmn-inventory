@@ -294,6 +294,30 @@ def session_view(sid: str):
     with summary_path.open("r", encoding="utf-8") as fh:
         summary = json.load(fh)
 
+    # Defensieve defaults voor sessies die nog zijn gegenereerd met een
+    # oudere versie van de pipeline (en dus sommige velden missen).
+    summary.setdefault("bpmn_files", [])
+    summary.setdefault("mermaid_erd", "")
+    summary.setdefault("report_per_bpmn", [])
+    summary.setdefault("findings", [])
+    summary.setdefault("findings_summary", {
+        "total": 0,
+        "by_severity": {},
+        "by_rule": {},
+        "rules_catalog": [],
+    })
+    summary.setdefault("actors", [])
+    summary.setdefault("anchors", [])
+    summary.setdefault("inventory", [])
+    summary.setdefault("files", [])
+    summary.setdefault("totals", {})
+    for k in ("files", "actors", "anchors", "rows", "tasks", "data_objects"):
+        summary["totals"].setdefault(k, 0)
+    # 'anchors' kan in oude summaries een list[str] zijn; normaliseer naar dicts
+    if summary["anchors"] and isinstance(summary["anchors"][0], str):
+        summary["anchors"] = [{"name": n, "processes": []}
+                              for n in summary["anchors"]]
+
     classification_counts: dict[str, int] = {}
     for row in summary["inventory"]:
         classification_counts[row["classification"]] = \
