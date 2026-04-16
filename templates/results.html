@@ -590,11 +590,6 @@
             var badge = document.createElement('div');
             badge.className = 'bpmn-overlay sev-' + sev;
             badge.textContent = sevIcon(sev);
-            // Native title als fallback
-            badge.title = findingsForEl.map(function (f) {
-                return f.severity.toUpperCase() + ' [' + f.rule + '] ' + f.message +
-                       (f.suggestion ? '\n\nTIP: ' + f.suggestion : '');
-            }).join('\n\n---\n\n');
 
             var tip = document.createElement('div');
             tip.className = 'bpmn-tooltip';
