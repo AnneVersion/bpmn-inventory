@@ -22,7 +22,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
-from flask import (Flask, abort, redirect, render_template, request,
+from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, url_for)
 from werkzeug.utils import secure_filename
 
@@ -35,6 +35,8 @@ from xlsx_export import write_xlsx                       # noqa: E402
 from drawio_export import write_drawio                   # noqa: E402
 from docx_export import write_docx                       # noqa: E402
 from bpmn_review import review, summarize                # noqa: E402
+import bpmn_apply                                        # noqa: E402
+import bpmn_defs                                         # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -205,8 +207,13 @@ def run_pipeline():
         ), 400
 
     model = merge(bpmns)
-    findings = review(model)
+    user_defs = bpmn_defs.load(ROOT)
+    findings = review(model, user_defs=user_defs)
     findings_summary = summarize(findings)
+
+    # Zorg dat iedere BPMN een v1 (origineel) heeft in versions/
+    for f in saved_files:
+        bpmn_apply.ensure_v1(sdir, f)
 
     xlsx_path = out_dir / "data-inventarisatie.xlsx"
     drawio_path = out_dir / "bpmn-en-erd.drawio"
@@ -227,10 +234,15 @@ def run_pipeline():
             "inventory": [asdict(r) for r in model.inventory],
         }, fh, indent=2, ensure_ascii=False)
 
+    # Versies per bestand
+    versions_by_file = {f: bpmn_apply.load_versions(sdir, f) for f in saved_files}
+
     # Summary voor resultaten-pagina (inclusief rapport-data)
     summary = {
         "sid": sid,
         "bpmn_files": saved_files,
+        "versions": versions_by_file,
+        "url_base": f"/session/{sid}",
         "files": [{
             "name": b.source_file,
             "process": b.process_name,
@@ -311,6 +323,8 @@ def session_view(sid: str):
     summary.setdefault("inventory", [])
     summary.setdefault("files", [])
     summary.setdefault("totals", {})
+    summary.setdefault("url_base", f"/session/{sid}")
+    summary.setdefault("versions", {})
     for k in ("files", "actors", "anchors", "rows", "tasks", "data_objects"):
         summary["totals"].setdefault(k, 0)
     # 'anchors' kan in oude summaries een list[str] zijn; normaliseer naar dicts
@@ -328,6 +342,241 @@ def session_view(sid: str):
         summary=summary,
         classification_counts=classification_counts,
     )
+
+
+def _regenerate_session_summary(sid: str) -> dict:
+    """Herbouw summary.json voor een sessie (na fix / nieuwe versie).
+
+    Leest alle .bpmn uit data/, draait pipeline + review en overschrijft
+    summary.json. Returns de nieuwe summary dict.
+    """
+    sdir = SESSIONS_DIR / sid
+    data_dir = sdir / "data"
+    out_dir = sdir / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    bpmns = parse_all(data_dir)
+    if not bpmns:
+        raise ValueError("Geen BPMNs meer in deze sessie")
+
+    model = merge(bpmns)
+    user_defs = bpmn_defs.load(ROOT)
+    findings = review(model, user_defs=user_defs)
+    findings_summary = summarize(findings)
+
+    saved_files = [p.name for p in sorted(data_dir.glob("*.bpmn"))] + \
+                  [p.name for p in sorted(data_dir.glob("*.xml"))]
+
+    # Regenereer de belangrijkste artifacts
+    write_xlsx(model, str(out_dir / "data-inventarisatie.xlsx"))
+    write_drawio(model, str(out_dir / "bpmn-en-erd.drawio"))
+    write_docx(model, str(out_dir / "rapport.docx"))
+    with (out_dir / "inventory.json").open("w", encoding="utf-8") as fh:
+        json.dump({"files": [b.source_file for b in bpmns],
+                   "inventory": [asdict(r) for r in model.inventory]},
+                  fh, indent=2, ensure_ascii=False)
+
+    versions_by_file = {f: bpmn_apply.load_versions(sdir, f)
+                        for f in saved_files}
+
+    summary = {
+        "sid": sid,
+        "bpmn_files": saved_files,
+        "versions": versions_by_file,
+        "url_base": f"/session/{sid}",
+        "files": [{"name": b.source_file, "process": b.process_name,
+                   "tasks": len(b.tasks),
+                   "data_objects": len(b.data_objects),
+                   "lanes": len(b.lanes),
+                   "gateways": len(b.gateways),
+                   "events": len(b.events)} for b in bpmns],
+        "totals": {"files": len(bpmns),
+                   "actors": len(model.actors),
+                   "anchors": len(model.anchor_objects()),
+                   "rows": len(model.inventory),
+                   "tasks": sum(len(b.tasks) for b in bpmns),
+                   "data_objects": sum(len(b.data_objects) for b in bpmns)},
+        "actors": [{"name": a.name,
+                    "type": "Extern" if a.subtype == "extern" else "Intern",
+                    "appears_in": a.evidence.get("appears_in", []),
+                    "reason": a.evidence.get("classification_reason", "")}
+                   for a in model.actors],
+        "anchors": [{"name": n,
+                     "processes": sorted({sf for sf, _ in model.data_object_index[n.lower()]})}
+                    for n in model.anchor_objects()],
+        "inventory": [asdict(r) for r in model.inventory],
+        "mermaid_erd": "",
+        "findings": findings,
+        "findings_summary": findings_summary,
+        "report_per_bpmn": [{
+            "name": b.source_file, "process": b.process_name,
+            "lanes": [l.name for l in b.lanes],
+            "external_actors": [p.name for p in b.participants
+                                if not p.attributes.get("processRef")],
+            "tasks": [{"id": f"A{i+1}", "name": t.name,
+                       "subtype": t.subtype, "lane": t.lane_id or ""}
+                      for i, t in enumerate(b.tasks)],
+            "data_objects": [{"name": d.name, "subtype": d.subtype, "id": d.id}
+                             for d in b.data_objects],
+            "annotations": [a.attributes.get("text", "") for a in b.annotations],
+        } for b in model.bpmns],
+    }
+
+    # Voeg mermaid ERD terug (oude webapp had een build_erd_mermaid)
+    try:
+        summary["mermaid_erd"] = build_erd_mermaid(model)
+    except Exception:
+        summary["mermaid_erd"] = ""
+
+    with (out_dir / "summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, ensure_ascii=False)
+    return summary
+
+
+@app.route("/session/<sid>/apply", methods=["POST"])
+def session_apply(sid: str):
+    """Pas een fix toe op een .bpmn. Body: JSON met
+    `file`, `task_id`, `object`, `action`, `attributes` (optioneel)."""
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    if not sdir.exists():
+        abort(404)
+
+    payload = request.get_json(silent=True) or {}
+    file_name = secure_filename(payload.get("file", ""))
+    task_id   = payload.get("task_id", "")
+    obj       = payload.get("object", "")
+    action    = (payload.get("action") or "WRITE").upper()
+    attrs     = payload.get("attributes") or []
+
+    if not (file_name and task_id and obj and action in ("READ", "WRITE", "UPDATE")):
+        return jsonify({"error": "Onvolledige payload. "
+                        "Verwacht file, task_id, object, action (READ/WRITE/UPDATE)."}), 400
+
+    data_file = sdir / "data" / file_name
+    if not data_file.exists():
+        return jsonify({"error": f"Bestand {file_name} niet gevonden"}), 404
+
+    # Pas fix toe op actieve bestand (overschrijft het)
+    try:
+        bpmn_apply.apply_add_dataobject(
+            data_file, task_id=task_id,
+            object_name=obj, action_type=action, attributes=attrs,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Fix mislukte: {e}"}), 500
+
+    # Nieuwe versie registreren
+    bpmn_apply.ensure_v1(sdir, file_name)
+    entry = bpmn_apply.add_fix_version(
+        sdir, file_name,
+        patched_bytes=data_file.read_bytes(),
+        description=f"Toegevoegd dataObject '{obj}' ({action}) aan task {task_id}",
+        applied_finding=payload,
+    )
+
+    # Summary opnieuw opbouwen
+    try:
+        summary = _regenerate_session_summary(sid)
+    except Exception as e:
+        return jsonify({"error": f"Summary-regeneratie mislukte: {e}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "new_version": entry,
+        "findings_total": summary["findings_summary"]["total"],
+        "redirect": f"/session/{sid}#panel=bpmn",
+    })
+
+
+@app.route("/session/<sid>/upload-version", methods=["POST"])
+def session_upload_version(sid: str):
+    """Upload een nieuwe versie van een bestaand .bpmn-bestand."""
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    if not sdir.exists():
+        abort(404)
+
+    target = request.form.get("target")
+    f = request.files.get("bpmn_file")
+    if not target or not f:
+        return "Geef target en bpmn_file mee.", 400
+
+    target = secure_filename(target)
+    if not (sdir / "data" / target).exists():
+        return f"Onbekend target-bestand: {target}", 404
+
+    if Path(f.filename).suffix.lower() not in ALLOWED_EXT:
+        return "Alleen .bpmn of .xml toegestaan.", 400
+
+    bpmn_apply.ensure_v1(sdir, target)
+    bpmn_apply.add_upload_version(
+        sdir, target,
+        bytes_=f.read(),
+        description=f"Nieuwe upload ({f.filename})",
+    )
+    try:
+        _regenerate_session_summary(sid)
+    except Exception as e:
+        return f"Regeneratie mislukt: {e}", 500
+    return redirect(url_for("session_view", sid=sid))
+
+
+@app.route("/session/<sid>/activate", methods=["POST"])
+def session_activate_version(sid: str):
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    payload = request.get_json(silent=True) or {}
+    file_name = secure_filename(payload.get("file", ""))
+    version = int(payload.get("version", 0) or 0)
+    if not (file_name and version):
+        return jsonify({"error": "Geef file + version"}), 400
+    ok = bpmn_apply.activate_version(sdir, file_name, version)
+    if not ok:
+        return jsonify({"error": "Versie niet gevonden"}), 404
+    try:
+        _regenerate_session_summary(sid)
+    except Exception as e:
+        return jsonify({"error": f"Regeneratie mislukt: {e}"}), 500
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Definities (user-dictionary)
+# ---------------------------------------------------------------------------
+
+@app.route("/definitions", methods=["GET"])
+def definitions_view():
+    data = bpmn_defs.load(ROOT)
+    return render_template("definitions.html", defs=data)
+
+
+@app.route("/definitions/api", methods=["GET"])
+def definitions_api():
+    return jsonify(bpmn_defs.load(ROOT))
+
+
+@app.route("/definitions/object", methods=["POST"])
+def definitions_upsert_object():
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    attrs = payload.get("attributes") or []
+    if not name:
+        return jsonify({"error": "Geef een naam"}), 400
+    try:
+        bpmn_defs.upsert_object(ROOT, name, attrs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "data": bpmn_defs.load(ROOT)})
+
+
+@app.route("/definitions/object/<name>", methods=["DELETE"])
+def definitions_delete_object(name: str):
+    bpmn_defs.delete_object(ROOT, name)
+    return jsonify({"ok": True, "data": bpmn_defs.load(ROOT)})
 
 
 @app.route("/session/<sid>/bpmn/<path:filename>")

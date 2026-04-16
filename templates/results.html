@@ -43,10 +43,22 @@
                 <label>Bestand:
                     <select id="bpmn-select">
                         {% for f in summary.bpmn_files %}
-                        <option value="{{ f }}">{{ f }}</option>
+                        {% set vcount = (summary.versions.get(f, [])|length) %}
+                        <option value="{{ f }}">{{ f }}{% if vcount > 1 %} (v{{ vcount }}){% endif %}</option>
                         {% endfor %}
                     </select>
                 </label>
+                <span id="bpmn-version-info" class="version-info"></span>
+                <form method="post" enctype="multipart/form-data"
+                      action="{{ summary.url_base }}/upload-version"
+                      class="upload-version-form" id="upload-version-form">
+                    <input type="hidden" name="target" id="upload-target" value="">
+                    <label class="upload-version-label">
+                        Nieuwe versie:
+                        <input type="file" name="bpmn_file" accept=".bpmn,.xml"
+                               onchange="this.form.submit();">
+                    </label>
+                </form>
                 <div class="bpmn-controls">
                     <label class="toggle-findings">
                         <input type="checkbox" id="toggle-findings" checked>
@@ -490,7 +502,9 @@
 
     // --- BPMN viewer ---
     var sid       = {{ summary.sid|tojson }};
+    var urlBase   = {{ summary.url_base|tojson }};
     var findings  = {{ summary.findings|tojson }};
+    var versions  = {{ summary.versions|tojson }};
     var viewerEl  = document.getElementById('bpmn-viewer');
     var select    = document.getElementById('bpmn-select');
     var status    = document.getElementById('bpmn-status');
@@ -591,6 +605,31 @@
                           return '<span class="tt-kw">' + escapeHtml(k) + '</span>';
                       }).join(' ') + '</div>'
                     : '';
+                var objBlock = '';
+                if (f.suggested_object) {
+                    var attrs = (f.suggested_attributes || []).map(function (a) {
+                        var flag = '';
+                        if (a.pk) flag = ' PK';
+                        else if (a.fk) flag = ' FK';
+                        var req = a.required ? ' <em>(verplicht)</em>' : '';
+                        return '<li><code>' + escapeHtml(a.name) + '</code> : ' +
+                               escapeHtml(a.type || 'string') + flag + req + '</li>';
+                    }).join('');
+                    var actionNL = { READ: 'Opzoeken (READ)',
+                                     WRITE: 'Schrijven (WRITE)',
+                                     UPDATE: 'Wijzigen (UPDATE)' }[f.action_type] || f.action_type || '';
+                    objBlock =
+                        '<div class="tt-obj">' +
+                          '<div><strong>Vermoedelijk object:</strong> ' +
+                            escapeHtml(f.suggested_object) +
+                            (actionNL ? ' <span class="tt-action">' + actionNL + '</span>' : '') +
+                          '</div>' +
+                          (attrs
+                            ? '<div class="tt-attrs"><strong>Attributen:</strong><ul>' + attrs + '</ul></div>'
+                            : '<div class="tt-noattrs">Geen attribuut-suggesties. '
+                              + '<a href="/definitions" target="_blank">Definieer in dictionary</a>.</div>') +
+                        '</div>';
+                }
                 return '<div class="tt-row">' +
                          '<div class="tt-head">' +
                            '<span class="sev-badge sev-' + f.severity + '">' + f.severity.toUpperCase() + '</span> ' +
@@ -598,6 +637,7 @@
                            '<span class="tt-rule-title">' + escapeHtml(f.rule_title || '') + '</span>' +
                          '</div>' +
                          '<div class="tt-msg">' + escapeHtml(f.message) + '</div>' +
+                         objBlock +
                          (f.suggestion
                            ? '<div class="tt-sug"><strong>Suggestie:</strong> ' + escapeHtml(f.suggestion) + '</div>'
                            : '') +
@@ -627,36 +667,133 @@
                 (added ? '' : '<span class="muted">geen findings voor dit bestand</span>');
         }
 
-        // Lijst onder het diagram (klikbaar naar element)
+        // Lijst onder het diagram (klikbaar naar element, incl. Toepassen-knop)
         if (listEl) {
             relevant.sort(function (a, b) {
                 return sevRank[a.severity] - sevRank[b.severity];
             });
-            listEl.innerHTML = relevant.map(function (f) {
-                return '<div class="bpmn-finding-row" data-eid="' + f.element_id + '">' +
+            listEl.innerHTML = relevant.map(function (f, idx) {
+                var objInfo = '';
+                if (f.suggested_object) {
+                    var attrs = (f.suggested_attributes || [])
+                        .map(function (a) { return a.name; }).join(', ');
+                    objInfo = '<div class="finding-obj">' +
+                              '<strong>' + escapeHtml(f.suggested_object) + '</strong>' +
+                              (f.action_type ? ' <span class="action-tag">' + f.action_type + '</span>' : '') +
+                              (attrs ? ' <span class="attrs">[' + escapeHtml(attrs) + ']</span>' : '') +
+                              '</div>';
+                }
+                var applyBtn = f.fixable
+                    ? '<button class="btn-apply" data-fidx="' + idx + '" type="button">Toepassen</button>'
+                    : '';
+                return '<div class="bpmn-finding-row" data-eid="' + f.element_id + '" data-fidx="' + idx + '">' +
                        '<span class="sev-badge sev-' + f.severity + '">' + f.severity.toUpperCase() + '</span>' +
                        '<code class="rule">' + f.rule + '</code>' +
-                       '<strong>' + (f.element_name || '(geen naam)') + '</strong>' +
-                       '<span class="msg">' + f.message + '</span>' +
+                       '<div class="main-info">' +
+                         '<strong>' + escapeHtml(f.element_name || '(geen naam)') + '</strong>' +
+                         '<span class="msg">' + escapeHtml(f.message) + '</span>' +
+                         objInfo +
+                       '</div>' +
+                       applyBtn +
                        '</div>';
             }).join('');
-            // Klik -> centreer/zoom op element
+            // Klik -> centreer/zoom op element (maar niet als knop geklikt)
             listEl.querySelectorAll('.bpmn-finding-row').forEach(function (row) {
-                row.addEventListener('click', function () {
+                row.addEventListener('click', function (ev) {
+                    if (ev.target.closest('.btn-apply')) return;
                     var id = row.getAttribute('data-eid');
                     var el = reg.get(id);
                     if (!el) return;
                     canvas.scrollToElement(el, { top: 200, bottom: 200, left: 200, right: 200 });
                 });
             });
+            // Toepassen-knoppen
+            listEl.querySelectorAll('.btn-apply').forEach(function (btn) {
+                btn.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    var idx = parseInt(btn.getAttribute('data-fidx'), 10);
+                    var f = relevant[idx];
+                    if (!f) return;
+                    openApplyDialog(f, fileName);
+                });
+            });
         }
+    }
+
+    // --- Apply dialog ---
+    function openApplyDialog(f, fileName) {
+        var dlg = document.getElementById('apply-dialog');
+        if (!dlg) {
+            dlg = document.createElement('div');
+            dlg.id = 'apply-dialog';
+            dlg.className = 'modal-backdrop';
+            document.body.appendChild(dlg);
+        }
+        var attrs = (f.suggested_attributes || []).map(function (a) {
+            return '<li><code>' + escapeHtml(a.name) + '</code> : ' + escapeHtml(a.type || 'string') +
+                   (a.required ? ' <em>(verplicht)</em>' : '') + '</li>';
+        }).join('') || '<li class="muted">Geen attributen gedefinieerd. <a href="/definitions" target="_blank">Definieer in dictionary</a></li>';
+        var actionNL = { READ: 'Opzoeken (dataInputAssociation)',
+                         WRITE: 'Schrijven (dataOutputAssociation)',
+                         UPDATE: 'Wijzigen (input + output)' }[f.action_type] || f.action_type;
+        dlg.innerHTML =
+          '<div class="modal">' +
+            '<h3>Toepassen: dataObject toevoegen</h3>' +
+            '<p>Bestand: <code>' + escapeHtml(fileName) + '</code><br>' +
+               'Taak: <strong>' + escapeHtml(f.element_name) + '</strong> (<code>' + escapeHtml(f.element_id) + '</code>)</p>' +
+            '<p><strong>Object:</strong> ' + escapeHtml(f.suggested_object) + '<br>' +
+               '<strong>Actie:</strong> ' + escapeHtml(actionNL) + '</p>' +
+            '<p><strong>Attributen (opgenomen in &lt;bpmn:documentation&gt;):</strong></p>' +
+            '<ul class="attr-preview">' + attrs + '</ul>' +
+            '<p class="modal-warn">De originele upload blijft bewaard als versie v1. De fix wordt opgeslagen als nieuwe versie.</p>' +
+            '<div class="modal-actions">' +
+              '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
+              '<button type="button" class="btn-primary" id="apply-confirm">Bevestig &amp; pas toe</button>' +
+            '</div>' +
+          '</div>';
+        dlg.style.display = 'flex';
+
+        document.getElementById('apply-cancel').onclick = function () {
+            dlg.style.display = 'none';
+        };
+        document.getElementById('apply-confirm').onclick = function () {
+            var btn = document.getElementById('apply-confirm');
+            btn.disabled = true;
+            btn.textContent = 'Bezig...';
+            fetch(urlBase + '/apply', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    file: fileName,
+                    task_id: f.element_id,
+                    object: f.suggested_object,
+                    action: f.action_type || 'WRITE',
+                    attributes: f.suggested_attributes || [],
+                })
+            }).then(function (r) { return r.json(); })
+              .then(function (res) {
+                if (res.error) {
+                    alert('Fout: ' + res.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Bevestig & pas toe';
+                    return;
+                }
+                dlg.style.display = 'none';
+                window.location.reload();
+              })
+              .catch(function (e) {
+                alert('Netwerk-fout: ' + e);
+                btn.disabled = false;
+                btn.textContent = 'Bevestig & pas toe';
+              });
+        };
     }
 
     function loadBpmn(name) {
         ensureViewer();
         if (!viewer) return;
         status.textContent = 'Laden: ' + name;
-        fetch('/session/' + sid + '/bpmn/' + encodeURIComponent(name))
+        fetch(urlBase + '/bpmn/' + encodeURIComponent(name))
             .then(function (r) { return r.text(); })
             .then(function (xml) {
                 viewer.importXML(xml).then(function (result) {
@@ -680,9 +817,34 @@
         if (viewer) viewer.get('canvas').zoom('fit-viewport');
     }
 
+    function updateVersionInfo(name) {
+        var info = document.getElementById('bpmn-version-info');
+        var uploadTarget = document.getElementById('upload-target');
+        if (uploadTarget) uploadTarget.value = name;
+        if (!info) return;
+        var vs = (versions || {})[name] || [];
+        if (vs.length <= 1) {
+            info.textContent = vs.length === 1 ? 'v1 (origineel)' : '';
+            return;
+        }
+        var parts = vs.map(function (v) {
+            var label = 'v' + v.version +
+                        (v.action === 'upload' ? ' (upload)' :
+                         v.action === 'fix' ? ' (fix)' : '');
+            return label;
+        });
+        info.innerHTML = 'Versies: ' + parts.join(' → ') + ' (actief: v' + vs[vs.length - 1].version + ')';
+    }
+
     if (select) {
-        select.addEventListener('change', function () { loadBpmn(select.value); });
-        if (select.value) loadBpmn(select.value);
+        select.addEventListener('change', function () {
+            loadBpmn(select.value);
+            updateVersionInfo(select.value);
+        });
+        if (select.value) {
+            loadBpmn(select.value);
+            updateVersionInfo(select.value);
+        }
     }
     if (toggle) toggle.addEventListener('change', function () {
         if (select) applyFindings(select.value);

@@ -18,6 +18,15 @@ from dataclasses import dataclass, field
 from bpmn_parser import ParsedBpmn, BpmnElement
 from merger import MergedModel
 
+# Hergebruik canonical-map + attribute-hints uit bpmn_erd
+try:
+    from bpmn_erd import canonicalize as _erd_canonicalize, \
+                         ATTRIBUTE_HINTS as _ERD_HINTS, \
+                         CANONICAL_MAP as _ERD_MAP
+except Exception:  # pragma: no cover
+    _erd_canonicalize = None
+    _ERD_HINTS, _ERD_MAP = {}, {}
+
 
 # ---------------------------------------------------------------------------
 # Rule catalog
@@ -68,18 +77,30 @@ RULES: dict[str, dict] = {
 }
 
 
-# Sleutelwoorden die in een taaknaam data-interactie impliceren
-DATA_VERBS = [
-    "toevoeg", "registreer", "invoer", "invul",
-    "muteer", "wijzig", "pas aan", "aanpas",
-    "verwerk", "aanmaak", "aanmak", "creeer",
-    "opvoer", "update", "bijwerk",
-    "opslaan", "opsla", "bewaar", "vastleg",
-    "zoek op", "opzoek", "raadpleeg", "raadple",
-    "verzend", "verstuur", "ontvang",
-    "goedkeur", "beoordeel", "controleer", "valideer",
-    "afkeur", "afwij",
-]
+# Sleutelwoorden in taaknaam -> impliciete data-interactie, met actietype:
+#   READ   = dataInputAssociation (taak leest object)
+#   WRITE  = dataOutputAssociation (taak maakt / schrijft object)
+#   UPDATE = beide (taak leest + wijzigt)
+VERB_ACTIONS: dict[str, str] = {
+    # WRITE = nieuw aanmaken / invoeren / vastleggen
+    "toevoeg": "WRITE", "registreer": "WRITE", "invoer": "WRITE",
+    "invul": "WRITE", "aanmaak": "WRITE", "aanmak": "WRITE",
+    "creeer": "WRITE", "opvoer": "WRITE", "vastleg": "WRITE",
+    "opslaan": "WRITE", "opsla": "WRITE", "bewaar": "WRITE",
+    "verzend": "WRITE", "verstuur": "WRITE",
+    # UPDATE = bestaand wijzigen
+    "muteer": "UPDATE", "wijzig": "UPDATE", "pas aan": "UPDATE",
+    "aanpas": "UPDATE", "update": "UPDATE", "bijwerk": "UPDATE",
+    "verwerk": "UPDATE",
+    # READ = opzoeken / raadplegen / controleren
+    "zoek op": "READ", "opzoek": "READ", "raadpleeg": "READ",
+    "raadple": "READ", "bekijk": "READ",
+    "ontvang": "READ",
+    "goedkeur": "READ", "beoordeel": "READ", "controleer": "READ",
+    "valideer": "READ", "afkeur": "READ", "afwij": "READ",
+}
+# Backwards-compat: platte lijst verbs voor keyword-matching
+DATA_VERBS = list(VERB_ACTIONS.keys())
 
 # Zelfstandige-naamwoord-achtige hints die op een dataobject wijzen
 DATA_NOUNS = [
@@ -120,6 +141,11 @@ class Finding:
     message: str
     suggestion: str = ""
     matched_keywords: list[str] = field(default_factory=list)
+    # Verrijking voor R101 (data-interactie) -- maakt auto-fix mogelijk:
+    action_type: str = ""           # "READ" | "WRITE" | "UPDATE" | ""
+    suggested_object: str = ""      # canonical bv. 'Organisatie'
+    suggested_attributes: list[dict] = field(default_factory=list)  # [{name, type}]
+    fixable: bool = False           # of een 'Toepassen'-flow mogelijk is
 
     def to_dict(self) -> dict:
         return {
@@ -133,6 +159,10 @@ class Finding:
             "message": self.message,
             "suggestion": self.suggestion,
             "matched_keywords": self.matched_keywords,
+            "action_type": self.action_type,
+            "suggested_object": self.suggested_object,
+            "suggested_attributes": self.suggested_attributes,
+            "fixable": self.fixable,
         }
 
 
@@ -146,16 +176,102 @@ def _find_keywords(text: str, keywords: list[str]) -> list[str]:
 
 
 def _suggest_data_object(task_name: str, nouns: list[str]) -> str:
-    """Gok een dataobject-naam uit de gevonden noun-keywords."""
+    """Gok een dataobject-naam uit de gevonden noun-keywords.
+
+    Stappen:
+    1. Extract het originele woord dat de noun bevat uit de taaknaam.
+    2. Stuur dat door `canonicalize()` (indien beschikbaar) om
+       'Organisatiegegevens' -> 'Organisatie' te krijgen.
+    3. Val terug op Title-case van de noun zelf.
+    """
     if not nouns:
         return ""
     noun = nouns[0]
-    # Extract een woord uit de originele naam dat deze substring bevat
+    raw = ""
     for word in re.findall(r"[A-Za-z]{3,}", task_name):
         if noun.lower() in word.lower():
-            # Capitalize
-            return word[0].upper() + word[1:]
-    return noun.capitalize()
+            raw = word
+            break
+    if not raw:
+        raw = noun
+    if _erd_canonicalize:
+        canon = _erd_canonicalize(raw)
+        if canon:
+            return canon
+    return raw[0].upper() + raw[1:]
+
+
+def _classify_action(verbs: list[str]) -> str:
+    """Map gevonden werkwoorden naar een actietype (READ/WRITE/UPDATE)."""
+    actions = {VERB_ACTIONS.get(v) for v in verbs if v in VERB_ACTIONS}
+    actions.discard(None)
+    if not actions:
+        return ""
+    # Prioriteit: UPDATE > WRITE > READ  (UPDATE impliceert lezen + schrijven)
+    if "UPDATE" in actions:
+        return "UPDATE"
+    if "WRITE" in actions and "READ" in actions:
+        return "UPDATE"
+    if "WRITE" in actions:
+        return "WRITE"
+    return "READ"
+
+
+def _lookup_attributes(canonical_object: str,
+                       user_defs: dict | None = None) -> list[dict]:
+    """Haal attribuut-suggesties op uit user-defs (priority) of ATTRIBUTE_HINTS.
+
+    `user_defs` is de user-dictionary: `{"objects": {"Organisatie": [...]}}`.
+    """
+    if not canonical_object:
+        return []
+    key_exact = canonical_object
+    key_low = canonical_object.lower()
+
+    # 1. User-dictionary heeft voorrang (exacte naam, case-insensitive)
+    if user_defs and isinstance(user_defs, dict):
+        objs = user_defs.get("objects", {})
+        for k, attrs in objs.items():
+            if k.lower() == key_low:
+                return _normalize_attrs(attrs)
+
+    # 2. Built-in ATTRIBUTE_HINTS (substring match op key)
+    for hint_key, specs in _ERD_HINTS.items():
+        if hint_key in key_low and len(hint_key) > 3:
+            return [_spec_to_dict(s) for s in specs]
+    if key_low in _ERD_HINTS:
+        return [_spec_to_dict(s) for s in _ERD_HINTS[key_low]]
+    return []
+
+
+def _spec_to_dict(spec: str) -> dict:
+    """'iban:string:uniek' -> {name, type, required, unique}"""
+    parts = spec.split(":")
+    name = parts[0]
+    typ = parts[1] if len(parts) > 1 else "string"
+    flags = parts[2:] if len(parts) > 2 else []
+    return {
+        "name": name,
+        "type": typ,
+        "required": "required" in flags,
+        "unique": "uniek" in flags or "unique" in flags,
+    }
+
+
+def _normalize_attrs(attrs: list) -> list[dict]:
+    """User-defs kunnen list[str] (spec) of list[dict] zijn."""
+    out = []
+    for a in attrs:
+        if isinstance(a, str):
+            out.append(_spec_to_dict(a))
+        elif isinstance(a, dict):
+            out.append({
+                "name": a.get("name", ""),
+                "type": a.get("type", "string"),
+                "required": bool(a.get("required", False)),
+                "unique": bool(a.get("unique", False)),
+            })
+    return out
 
 
 def _flows_source_target(parsed: ParsedBpmn) -> tuple[set[str], set[str]]:
@@ -318,7 +434,8 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
     return findings
 
 
-def _review_semantic(parsed: ParsedBpmn) -> list[Finding]:
+def _review_semantic(parsed: ParsedBpmn,
+                     user_defs: dict | None = None) -> list[Finding]:
     """Taaknamen met 'toevoegen organisatiegegevens in CRM'-patroon."""
     findings: list[Finding] = []
     src = parsed.source_file
@@ -345,6 +462,31 @@ def _review_semantic(parsed: ParsedBpmn) -> list[Finding]:
         # R101: taak doet data-interactie maar heeft geen dataAssociation
         if (verbs and nouns) and t.id not in tasks_with_data:
             suggested = _suggest_data_object(name, nouns)
+            action = _classify_action(verbs)
+            attrs = _lookup_attributes(suggested, user_defs)
+
+            # Friendlier suggestion tekst
+            action_nl = {"READ": "opzoeken / raadplegen",
+                         "WRITE": "aanmaken / schrijven",
+                         "UPDATE": "wijzigen (lezen + schrijven)"
+                        }.get(action, "benaderen")
+            attr_names = ", ".join(a["name"] for a in attrs) if attrs else ""
+            attr_hint = (f" Verwachte attributen: {attr_names}."
+                         if attr_names else
+                         " (Geen attribuut-suggesties; voeg ze toe in Definities.)")
+            suggestion = (
+                f"Vermoedelijk object: '{suggested}' — actie: {action_nl}."
+                + attr_hint
+                + " Klik 'Toepassen' om een <bpmn:dataObject>"
+                + (" + <bpmn:dataInputAssociation>" if action == "READ"
+                   else " + <bpmn:dataOutputAssociation>" if action == "WRITE"
+                   else " + data(Input|Output)Association")
+                + " toe te voegen aan deze taak."
+            ) if suggested else (
+                "Voeg een expliciet dataObject toe en koppel het via een"
+                " data(Input|Output)Association."
+            )
+
             findings.append(Finding(
                 rule="R101", severity=RULES["R101"]["severity"],
                 source_file=src, element_id=t.id, element_name=name,
@@ -353,13 +495,12 @@ def _review_semantic(parsed: ParsedBpmn) -> list[Finding]:
                          f"{verbs!r} en data-zelfstandig naamwoord "
                          f"{nouns!r}, maar is niet gekoppeld aan een"
                          f" <bpmn:dataObject>."),
-                suggestion=(f"Voeg een <bpmn:dataObject> '{suggested}' toe en"
-                            " koppel met <bpmn:dataInputAssociation> of"
-                            " <bpmn:dataOutputAssociation>."
-                            if suggested else
-                            "Voeg een expliciet dataObject toe en koppel het"
-                            " met een data(Input|Output)Association."),
+                suggestion=suggestion,
                 matched_keywords=verbs + nouns,
+                action_type=action,
+                suggested_object=suggested,
+                suggested_attributes=attrs,
+                fixable=bool(suggested and action),
             ))
 
         # R102: systeem genoemd zonder dataStore in proces
@@ -384,12 +525,17 @@ def _review_semantic(parsed: ParsedBpmn) -> list[Finding]:
     return findings
 
 
-def review(model: MergedModel) -> list[dict]:
-    """Draai alle checks en geef dicts terug (JSON-ready)."""
+def review(model: MergedModel, user_defs: dict | None = None) -> list[dict]:
+    """Draai alle checks en geef dicts terug (JSON-ready).
+
+    `user_defs` = inhoud van de user-dictionary (definities.json) met
+    {"objects": {"<Naam>": [attribuut-specs...]}}. Heeft voorrang boven
+    de ingebouwde ATTRIBUTE_HINTS bij R101-suggesties.
+    """
     findings: list[Finding] = []
     for parsed in model.bpmns:
         findings.extend(_review_structural(parsed))
-        findings.extend(_review_semantic(parsed))
+        findings.extend(_review_semantic(parsed, user_defs))
 
     # Sorteer: error > warning > info, dan per bestand
     order = {"error": 0, "warning": 1, "info": 2}

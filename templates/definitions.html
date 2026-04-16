@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}Definities - BPMN Inventory{% endblock %}
+
+{% block content %}
+<section>
+    <h1>Definities / data dictionary</h1>
+    <p class="lead">
+        Hier leg je objecten (entiteiten) en hun attributen vast. Deze
+        definities hebben voorrang op de ingebouwde vocabulary en worden
+        hergebruikt bij <code>R101</code>-suggesties in de kwaliteitscheck
+        en bij <strong>Toepassen</strong>-acties die een <code>&lt;bpmn:dataObject&gt;</code>
+        aan een taak toevoegen.
+    </p>
+
+    <div class="defs-layout">
+        <aside class="defs-sidebar">
+            <h3>Objecten</h3>
+            <ul class="defs-list" id="defs-list"></ul>
+            <button type="button" class="btn-primary" id="new-obj-btn">+ Nieuw object</button>
+        </aside>
+
+        <section class="defs-editor" id="defs-editor">
+            <div class="empty">
+                <h3>Kies links een object</h3>
+                <p>Of klik <em>+ Nieuw object</em> om te starten.</p>
+            </div>
+        </section>
+    </div>
+
+    <p style="margin-top:24px;"><a href="/" class="btn-secondary">&larr; Terug</a></p>
+</section>
+
+<script>
+(function () {
+    var data = {{ defs|tojson }};
+    var listEl = document.getElementById('defs-list');
+    var editorEl = document.getElementById('defs-editor');
+    var current = null;
+
+    function renderList() {
+        var names = Object.keys(data.objects || {}).sort();
+        listEl.innerHTML = names.map(function (n) {
+            var n_attr = (data.objects[n] || []).length;
+            return '<li class="' + (current === n ? 'active' : '') +
+                   '" data-n="' + escapeAttr(n) + '">' +
+                   '<span class="obj-name">' + escapeHtml(n) + '</span>' +
+                   '<span class="obj-count">' + n_attr + '</span>' +
+                   '</li>';
+        }).join('');
+        Array.from(listEl.children).forEach(function (li) {
+            li.addEventListener('click', function () {
+                current = li.getAttribute('data-n');
+                renderList();
+                renderEditor();
+            });
+        });
+    }
+
+    function renderEditor() {
+        if (!current || !(current in (data.objects || {}))) {
+            editorEl.innerHTML = '<div class="empty"><h3>Kies links een object</h3><p>Of klik <em>+ Nieuw object</em>.</p></div>';
+            return;
+        }
+        var attrs = data.objects[current] || [];
+        editorEl.innerHTML =
+            '<div class="def-form">' +
+              '<div class="row"><label>Objectnaam</label>' +
+                '<input type="text" id="obj-name" value="' + escapeAttr(current) + '"></div>' +
+              '<h3>Attributen</h3>' +
+              '<div id="attr-rows">' +
+                attrs.map(attrRowHtml).join('') +
+              '</div>' +
+              '<button type="button" id="add-attr" class="btn-secondary">+ Attribuut</button>' +
+              '<div class="modal-actions" style="margin-top:18px;">' +
+                '<button type="button" id="delete-obj" class="btn-danger">Verwijder object</button>' +
+                '<button type="button" id="save-obj" class="btn-primary">Opslaan</button>' +
+              '</div>' +
+            '</div>';
+        document.getElementById('add-attr').onclick = function () {
+            document.getElementById('attr-rows').insertAdjacentHTML('beforeend', attrRowHtml({}));
+        };
+        document.getElementById('save-obj').onclick = saveObject;
+        document.getElementById('delete-obj').onclick = deleteObject;
+    }
+
+    function attrRowHtml(a) {
+        return '<div class="attr-row">' +
+                 '<input type="text" class="attr-name" placeholder="naam" value="' + escapeAttr(a.name || '') + '">' +
+                 '<select class="attr-type">' +
+                    ['string','number','date','boolean','enum'].map(function (t) {
+                       return '<option value="' + t + '"' + (a.type === t ? ' selected' : '') + '>' + t + '</option>';
+                    }).join('') +
+                 '</select>' +
+                 '<label><input type="checkbox" class="attr-req"' + (a.required ? ' checked' : '') + '> verplicht</label>' +
+                 '<label><input type="checkbox" class="attr-uni"' + (a.unique ? ' checked' : '') + '> uniek</label>' +
+                 '<button type="button" class="attr-del" title="verwijder">&times;</button>' +
+               '</div>';
+    }
+
+    function saveObject() {
+        var name = document.getElementById('obj-name').value.trim();
+        if (!name) { alert('Geef een objectnaam'); return; }
+        var attrs = Array.from(document.querySelectorAll('#attr-rows .attr-row')).map(function (row) {
+            return {
+                name: row.querySelector('.attr-name').value.trim(),
+                type: row.querySelector('.attr-type').value,
+                required: row.querySelector('.attr-req').checked,
+                unique: row.querySelector('.attr-uni').checked,
+            };
+        }).filter(function (a) { return a.name; });
+        fetch('/definitions/object', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: name, attributes: attrs })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res.error) { alert('Fout: ' + res.error); return; }
+            data = res.data;
+            // Ook het oude object verwijderen als naam gewijzigd
+            if (current && current !== name) {
+                fetch('/definitions/object/' + encodeURIComponent(current), {method: 'DELETE'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (res2) { data = res2.data; current = name; renderList(); renderEditor(); });
+            } else {
+                current = name;
+                renderList(); renderEditor();
+            }
+        });
+    }
+
+    function deleteObject() {
+        if (!current) return;
+        if (!confirm('Object "' + current + '" verwijderen?')) return;
+        fetch('/definitions/object/' + encodeURIComponent(current), {method: 'DELETE'})
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+                data = res.data;
+                current = null;
+                renderList(); renderEditor();
+            });
+    }
+
+    document.addEventListener('click', function (ev) {
+        if (ev.target.classList && ev.target.classList.contains('attr-del')) {
+            ev.target.closest('.attr-row').remove();
+        }
+    });
+
+    document.getElementById('new-obj-btn').onclick = function () {
+        current = 'NieuwObject';
+        data.objects[current] = [];
+        renderList();
+        renderEditor();
+    };
+
+    function escapeHtml(s) {
+        return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+    function escapeAttr(s) {
+        return escapeHtml(s).replace(/"/g, '&quot;');
+    }
+
+    renderList();
+    renderEditor();
+})();
+</script>
+{% endblock %}
