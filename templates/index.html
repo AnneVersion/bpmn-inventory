@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h1>BPMN Data-Inventarisatie</h1>
+    <p class="lead">
+        Upload een of meerdere <code>.bpmn</code> bestanden. De tool parseert
+        de BPMN&nbsp;2.0 XML, classificeert dataobjecten, identificeert
+        ankerobjecten en genereert een ingevulde inventarisatie als
+        Excel, draw.io, Word en JSON.
+    </p>
+</section>
+
+{% if error %}
+<div class="alert">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('run_pipeline') }}"
+      enctype="multipart/form-data" class="upload-card">
+    <label class="file-drop">
+        <input type="file" name="bpmn_files" multiple accept=".bpmn,.xml" required>
+        <span class="file-drop-text">
+            Klik of sleep <strong>.bpmn</strong> bestanden hierheen
+        </span>
+        <span class="file-drop-hint">Max {{ max_mb }} MB per bestand</span>
+    </label>
+    <button type="submit" class="btn-primary">Genereer inventarisatie</button>
+</form>
+
+<section class="info-grid">
+    <article class="info-card">
+        <h3>Wat krijg je terug?</h3>
+        <ul>
+            <li><strong>data-inventarisatie.xlsx</strong> — template met alle rijen</li>
+            <li><strong>bpmn-en-erd.drawio</strong> — samengevoegde BPMN + afgeleide ERD</li>
+            <li><strong>rapport.docx</strong> — Word-rapport met methodiek</li>
+            <li><strong>inventory.json</strong> — machine-readable dump</li>
+        </ul>
+    </article>
+
+    <article class="info-card">
+        <h3>Classificatie</h3>
+        <p>
+            Heuristiek op naam: trefwoorden als <em>vakbond</em>, <em>iban</em>,
+            <em>bsn</em> leiden tot <em>Bijzonder</em> / <em>Vertrouwelijk</em>.
+            Alles overig is standaard <em>Intern</em>. Controleer handmatig.
+        </p>
+    </article>
+
+    <article class="info-card">
+        <h3>Ankerobjecten</h3>
+        <p>
+            Dataobjecten waarvan de naam in 2+ BPMN's voorkomt worden als
+            anker gemarkeerd (oranje shape + &#9875; in draw.io).
+        </p>
+    </article>
+</section>
+{% endblock %}

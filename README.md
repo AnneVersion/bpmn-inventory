@@ -39,6 +39,8 @@ bpmn_inventory/
 
 ## Gebruik
 
+### CLI
+
 ```bash
 cd bpmn_inventory
 python src/main.py
@@ -50,6 +52,29 @@ Of met expliciete paden:
 python src/main.py --data E:\scripts\webscraper\bpmn\data ^
                    --out  E:\scripts\webscraper\bpmn\output
 ```
+
+### GUI (Tkinter)
+
+```bash
+python src/gui.py
+```
+
+Of dubbelklik `run_gui.bat` in Windows Verkenner.
+
+### Web-frontend (Flask)
+
+```bash
+python serve.py
+```
+
+Of dubbelklik `run_web.bat`. Daarna openen: [http://localhost:8095](http://localhost:8095).
+
+Upload een of meerdere `.bpmn`-bestanden via de pagina; de tool draait de
+volledige pipeline en toont KPI's, actoren, classificatie-verdeling en een
+filterbare inventarisatie-tabel met downloadknoppen voor xlsx, drawio,
+docx en json. Iedere upload krijgt een eigen sessie-map onder
+`output/sessions/<sid>/`, zodat parallelle sessies elkaar niet
+overschrijven.
 
 ### Outputs
 

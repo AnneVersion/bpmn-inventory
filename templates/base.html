@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="nl">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}BPMN Data-Inventarisatie{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <a href="{{ url_for('index') }}" class="logo">BPMN Inventory</a>
+    <nav>
+        <a href="https://github.com/AnneVersion/bpmn-inventory" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+</header>
+
+<main class="container">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="footer">
+    <p>BPMN 2.0 -&gt; xlsx / drawio / docx. Lokaal, geen externe API's.</p>
+</footer>
+</body>
+</html>

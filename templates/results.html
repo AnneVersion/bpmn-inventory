@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block title %}Resultaten - BPMN Inventory{% endblock %}
+
+{% block content %}
+<section class="result-header">
+    <h1>Resultaat</h1>
+    <p class="lead">
+        Sessie <code>{{ summary.sid }}</code> &mdash; {{ summary.totals.files }}
+        bestand(en), {{ summary.totals.rows }} inventarisatie-rijen.
+    </p>
+</section>
+
+<section class="kpi-grid">
+    <div class="kpi">
+        <div class="kpi-num">{{ summary.totals.files }}</div>
+        <div class="kpi-label">BPMN-bestanden</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-num">{{ summary.totals.actors }}</div>
+        <div class="kpi-label">Actoren</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-num">{{ summary.totals.anchors }}</div>
+        <div class="kpi-label">Ankerobjecten</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-num">{{ summary.totals.rows }}</div>
+        <div class="kpi-label">Inventory-rijen</div>
+    </div>
+</section>
+
+<section class="downloads">
+    <h2>Downloads</h2>
+    <div class="download-grid">
+        <a class="download-card"
+           href="{{ url_for('session_download', sid=summary.sid, filename='data-inventarisatie.xlsx') }}">
+            <span class="ext xlsx">XLSX</span>
+            <span class="dl-title">data-inventarisatie.xlsx</span>
+            <span class="dl-desc">Excel: alle processen, actoren, ankers, legenda</span>
+        </a>
+        <a class="download-card"
+           href="{{ url_for('session_download', sid=summary.sid, filename='bpmn-en-erd.drawio') }}">
+            <span class="ext drawio">DRAWIO</span>
+            <span class="dl-title">bpmn-en-erd.drawio</span>
+            <span class="dl-desc">Open in diagrams.net - BPMN pagina + ERD pagina</span>
+        </a>
+        <a class="download-card"
+           href="{{ url_for('session_download', sid=summary.sid, filename='rapport.docx') }}">
+            <span class="ext docx">DOCX</span>
+            <span class="dl-title">rapport.docx</span>
+            <span class="dl-desc">Word-rapport met methodiek</span>
+        </a>
+        <a class="download-card"
+           href="{{ url_for('session_download', sid=summary.sid, filename='inventory.json') }}">
+            <span class="ext json">JSON</span>
+            <span class="dl-title">inventory.json</span>
+            <span class="dl-desc">Machine-readable dump</span>
+        </a>
+    </div>
+</section>
+
+<section>
+    <h2>Verwerkte bestanden</h2>
+    <table class="data-table">
+        <thead>
+        <tr>
+            <th>Bestand</th><th>Proces</th>
+            <th class="num">Tasks</th>
+            <th class="num">Data-objects</th>
+            <th class="num">Lanes</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for f in summary.files %}
+        <tr>
+            <td><code>{{ f.name }}</code></td>
+            <td>{{ f.process or '&mdash;'|safe }}</td>
+            <td class="num">{{ f.tasks }}</td>
+            <td class="num">{{ f.data_objects }}</td>
+            <td class="num">{{ f.lanes }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>Classificatie-verdeling</h2>
+    <div class="badge-row">
+        {% for cls, n in classification_counts.items() %}
+        <span class="badge cls-{{ cls|lower|replace(' ', '-') }}">
+            {{ cls }}: {{ n }}
+        </span>
+        {% endfor %}
+    </div>
+</section>
+
+<section>
+    <h2>Actoren ({{ summary.actors|length }})</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>Naam</th><th>Type</th><th>Komt voor in</th></tr>
+        </thead>
+        <tbody>
+        {% for a in summary.actors %}
+        <tr>
+            <td>{{ a.name }}</td>
+            <td><span class="badge {{ 'cls-extern' if a.type == 'Extern' else 'cls-intern' }}">{{ a.type }}</span></td>
+            <td><small>{{ a.appears_in|join(', ') }}</small></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+{% if summary.anchors %}
+<section>
+    <h2>Ankerobjecten ({{ summary.anchors|length }})</h2>
+    <div class="anchor-row">
+        {% for name in summary.anchors %}
+        <span class="anchor">&#9875; {{ name }}</span>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<section>
+    <h2>Inventarisatie ({{ summary.inventory|length }} rijen)</h2>
+    <div class="table-tools">
+        <input type="search" id="inv-filter" placeholder="Filter op proces, taak of dataobject..."
+               class="filter-input">
+    </div>
+    <div class="table-scroll">
+    <table class="data-table" id="inv-table">
+        <thead>
+        <tr>
+            <th>Proces</th>
+            <th>Stap-ID</th>
+            <th>Processtap</th>
+            <th>Dataobject</th>
+            <th>Attribuut</th>
+            <th>Classificatie</th>
+            <th>Bron</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for r in summary.inventory %}
+        <tr>
+            <td>{{ r.process }}</td>
+            <td><code>{{ r.step_id }}</code></td>
+            <td>{{ r.process_step }}</td>
+            <td>{{ r.data_object }}</td>
+            <td><small>{{ r.attribute }}</small></td>
+            <td><span class="badge cls-{{ r.classification|lower|replace(' ', '-') }}">{{ r.classification }}</span></td>
+            <td><small>{{ r.source }}</small></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+
+<p><a href="{{ url_for('index') }}" class="btn-secondary">&larr; Nieuwe upload</a></p>
+
+<script>
+(function () {
+    var input = document.getElementById('inv-filter');
+    var table = document.getElementById('inv-table');
+    if (!input || !table) return;
+    input.addEventListener('input', function () {
+        var q = input.value.toLowerCase();
+        var rows = table.tBodies[0].rows;
+        for (var i = 0; i < rows.length; i++) {
+            rows[i].style.display =
+                rows[i].textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+        }
+    });
+})();
+</script>
+{% endblock %}

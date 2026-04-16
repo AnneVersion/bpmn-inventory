@@ -19,9 +19,10 @@ data/*
 # Zips (handmatige snapshots)
 *.zip
 
-# IDE
+# IDE / Claude
 .vscode/
 .idea/
+.claude/
 *.swp
 
 # OS
