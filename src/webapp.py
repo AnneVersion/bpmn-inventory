@@ -8,14 +8,17 @@ Endpoints:
     GET  /                          upload-pagina
     POST /run                       verwerk geuploade .bpmn's
     GET  /session/<sid>             resultaten-pagina
-    GET  /session/<sid>/download/<filename>
+    GET  /session/<sid>/bpmn/<f>    raw .bpmn XML (voor bpmn-js)
+    GET  /session/<sid>/download/<f>
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 import uuid
+from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
@@ -49,6 +52,106 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_MB * 1024 * 1024 * 20  # 20 bestande
 
 
 # ---------------------------------------------------------------------------
+# Mermaid ERD builder
+# ---------------------------------------------------------------------------
+
+_ID_CLEAN = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _mermaid_id(name: str) -> str:
+    """Maak een veilige mermaid-entity-naam (geen spaties/leestekens)."""
+    clean = _ID_CLEAN.sub("_", name).strip("_") or "ENTITY"
+    if clean[0].isdigit():
+        clean = "E_" + clean
+    return clean[:40]
+
+
+def build_erd_mermaid(model) -> str:
+    """Genereer een mermaid erDiagram uit de merged model.
+
+    Entiteiten = unieke dataobject-namen.
+    Relaties   = elke taak die twee dataobjects gebruikt (via
+                 dataInput/OutputAssociation) creeert een relatie tussen
+                 die twee entiteiten.
+    """
+    # Collect unique entities by display name
+    entity_by_name: dict[str, dict] = {}
+    anchors = {a.lower() for a in model.anchor_objects()}
+
+    for parsed in model.bpmns:
+        for d in parsed.data_objects:
+            nm = (d.name or "").strip()
+            if not nm or nm.startswith("(naamloos"):
+                continue
+            key = nm.lower()
+            if key not in entity_by_name:
+                entity_by_name[key] = {
+                    "name": nm,
+                    "id": _mermaid_id(nm),
+                    "processes": set(),
+                    "is_anchor": key in anchors,
+                }
+            entity_by_name[key]["processes"].add(parsed.process_name or parsed.source_file)
+
+    # Collect co-occurrences per task (input/output of same task)
+    relations: set[tuple[str, str]] = set()
+    for parsed in model.bpmns:
+        by_id = {d.id: d for d in parsed.data_objects}
+        task_to_objs: dict[str, list[str]] = defaultdict(list)
+        for assoc in parsed.data_associations:
+            src = assoc.attributes.get("source", "")
+            tgt = assoc.attributes.get("target", "")
+            if assoc.subtype == "dataInputAssociation":
+                data_el = by_id.get(src); task_id = tgt
+            else:
+                data_el = by_id.get(tgt) or by_id.get(src); task_id = src
+            if data_el and data_el.name and task_id:
+                task_to_objs[task_id].append(data_el.name.lower())
+
+        for objs in task_to_objs.values():
+            uniq = sorted(set(objs))
+            for i in range(len(uniq)):
+                for j in range(i + 1, len(uniq)):
+                    relations.add((uniq[i], uniq[j]))
+
+    if not entity_by_name:
+        return ""
+
+    # Build mermaid string
+    lines = ["erDiagram"]
+    for entity in sorted(entity_by_name.values(), key=lambda e: e["name"]):
+        anchor_mark = "  anchor" if entity["is_anchor"] else ""
+        processes_str = ", ".join(sorted(entity["processes"]))[:60]
+        lines.append(f"    {entity['id']} {{")
+        lines.append(f"        string naam \"{entity['name']}\"")
+        if entity["is_anchor"]:
+            lines.append(f"        string type \"Ankerobject\"")
+        if processes_str:
+            # escape dubbele quotes
+            safe = processes_str.replace('"', "'")
+            lines.append(f"        string proces \"{safe}\"")
+        lines.append("    }")
+
+    for a, b in sorted(relations):
+        ea = entity_by_name.get(a)
+        eb = entity_by_name.get(b)
+        if ea and eb:
+            lines.append(f'    {ea["id"]} }}o--o{{ {eb["id"]} : "gedeelde taak"')
+
+    # Als er geen relaties zijn, voeg dan ankers-centrale links toe
+    if not relations and len(entity_by_name) > 1:
+        anchor_entities = [e for e in entity_by_name.values() if e["is_anchor"]]
+        if anchor_entities:
+            center = anchor_entities[0]
+            for e in entity_by_name.values():
+                if e is center:
+                    continue
+                lines.append(f'    {center["id"]} }}o--|| {e["id"]} : "co-proces"')
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -66,7 +169,6 @@ def run_pipeline():
                                error="Geen bestanden geupload.",
                                max_mb=MAX_FILE_MB), 400
 
-    # Valideer extensies
     for f in files:
         ext = Path(f.filename).suffix.lower()
         if ext not in ALLOWED_EXT:
@@ -76,7 +178,6 @@ def run_pipeline():
                 max_mb=MAX_FILE_MB,
             ), 400
 
-    # Nieuwe sessie
     sid = uuid.uuid4().hex[:12]
     sdir = SESSIONS_DIR / sid
     data_dir = sdir / "data"
@@ -84,11 +185,16 @@ def run_pipeline():
     data_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    saved_files: list[str] = []
     for f in files:
-        dest = data_dir / secure_filename(f.filename)
+        safe_name = secure_filename(f.filename)
+        # secure_filename can return '' for pathologic names; fallback
+        if not safe_name:
+            safe_name = f"upload_{len(saved_files)+1}.bpmn"
+        dest = data_dir / safe_name
         f.save(str(dest))
+        saved_files.append(safe_name)
 
-    # Pipeline
     bpmns = parse_all(data_dir)
     if not bpmns:
         return render_template(
@@ -118,29 +224,54 @@ def run_pipeline():
             "inventory": [asdict(r) for r in model.inventory],
         }, fh, indent=2, ensure_ascii=False)
 
-    # Summary voor resultaten-pagina
+    # Summary voor resultaten-pagina (inclusief rapport-data)
     summary = {
         "sid": sid,
+        "bpmn_files": saved_files,
         "files": [{
             "name": b.source_file,
             "process": b.process_name,
             "tasks": len(b.tasks),
             "data_objects": len(b.data_objects),
             "lanes": len(b.lanes),
+            "gateways": len(b.gateways),
+            "events": len(b.events),
         } for b in bpmns],
         "totals": {
             "files": len(bpmns),
             "actors": len(model.actors),
             "anchors": len(model.anchor_objects()),
             "rows": len(model.inventory),
+            "tasks": sum(len(b.tasks) for b in bpmns),
+            "data_objects": sum(len(b.data_objects) for b in bpmns),
         },
         "actors": [{
             "name": a.name,
             "type": "Extern" if a.subtype == "extern" else "Intern",
             "appears_in": a.evidence.get("appears_in", []),
+            "reason": a.evidence.get("classification_reason", ""),
         } for a in model.actors],
-        "anchors": model.anchor_objects(),
+        "anchors": [
+            {"name": name,
+             "processes": sorted({sf for sf, _ in model.data_object_index[name.lower()]})}
+            for name in model.anchor_objects()
+        ],
         "inventory": [asdict(r) for r in model.inventory],
+        "mermaid_erd": build_erd_mermaid(model),
+        # Rapport-secties per BPMN (voor inline HTML rapport)
+        "report_per_bpmn": [{
+            "name": b.source_file,
+            "process": b.process_name,
+            "lanes": [l.name for l in b.lanes],
+            "external_actors": [p.name for p in b.participants
+                                if not p.attributes.get("processRef")],
+            "tasks": [{"id": f"A{i+1}", "name": t.name,
+                       "subtype": t.subtype, "lane": t.lane_id or ""}
+                      for i, t in enumerate(b.tasks)],
+            "data_objects": [{"name": d.name, "subtype": d.subtype, "id": d.id}
+                             for d in b.data_objects],
+            "annotations": [a.attributes.get("text", "") for a in b.annotations],
+        } for b in model.bpmns],
     }
     with (out_dir / "summary.json").open("w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, ensure_ascii=False)
@@ -158,7 +289,6 @@ def session_view(sid: str):
     with summary_path.open("r", encoding="utf-8") as fh:
         summary = json.load(fh)
 
-    # Tel classificatie-verdeling voor de badges
     classification_counts: dict[str, int] = {}
     for row in summary["inventory"]:
         classification_counts[row["classification"]] = \
@@ -168,6 +298,20 @@ def session_view(sid: str):
         "results.html",
         summary=summary,
         classification_counts=classification_counts,
+    )
+
+
+@app.route("/session/<sid>/bpmn/<path:filename>")
+def session_bpmn_raw(sid: str, filename: str):
+    """Serveer een geuploade .bpmn file als XML voor bpmn-js."""
+    if not _is_valid_sid(sid):
+        abort(404)
+    data_dir = SESSIONS_DIR / sid / "data"
+    safe = secure_filename(filename)
+    if not safe or not (data_dir / safe).exists():
+        abort(404)
+    return send_from_directory(
+        str(data_dir), safe, mimetype="application/xml"
     )
 
 

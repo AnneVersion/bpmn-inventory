@@ -12,170 +12,403 @@
 </section>
 
 <section class="kpi-grid">
-    <div class="kpi">
-        <div class="kpi-num">{{ summary.totals.files }}</div>
-        <div class="kpi-label">BPMN-bestanden</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-num">{{ summary.totals.actors }}</div>
-        <div class="kpi-label">Actoren</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-num">{{ summary.totals.anchors }}</div>
-        <div class="kpi-label">Ankerobjecten</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-num">{{ summary.totals.rows }}</div>
-        <div class="kpi-label">Inventory-rijen</div>
-    </div>
+    <div class="kpi"><div class="kpi-num">{{ summary.totals.files }}</div><div class="kpi-label">BPMN-bestanden</div></div>
+    <div class="kpi"><div class="kpi-num">{{ summary.totals.tasks }}</div><div class="kpi-label">Processtappen</div></div>
+    <div class="kpi"><div class="kpi-num">{{ summary.totals.data_objects }}</div><div class="kpi-label">Data-objecten</div></div>
+    <div class="kpi"><div class="kpi-num">{{ summary.totals.actors }}</div><div class="kpi-label">Actoren</div></div>
+    <div class="kpi"><div class="kpi-num">{{ summary.totals.anchors }}</div><div class="kpi-label">Ankerobjecten</div></div>
+    <div class="kpi"><div class="kpi-num">{{ summary.totals.rows }}</div><div class="kpi-label">Inventory-rijen</div></div>
 </section>
 
-<section class="downloads">
-    <h2>Downloads</h2>
-    <div class="download-grid">
-        <a class="download-card"
-           href="{{ url_for('session_download', sid=summary.sid, filename='data-inventarisatie.xlsx') }}">
-            <span class="ext xlsx">XLSX</span>
-            <span class="dl-title">data-inventarisatie.xlsx</span>
-            <span class="dl-desc">Excel: alle processen, actoren, ankers, legenda</span>
-        </a>
-        <a class="download-card"
-           href="{{ url_for('session_download', sid=summary.sid, filename='bpmn-en-erd.drawio') }}">
-            <span class="ext drawio">DRAWIO</span>
-            <span class="dl-title">bpmn-en-erd.drawio</span>
-            <span class="dl-desc">Open in diagrams.net - BPMN pagina + ERD pagina</span>
-        </a>
-        <a class="download-card"
-           href="{{ url_for('session_download', sid=summary.sid, filename='rapport.docx') }}">
-            <span class="ext docx">DOCX</span>
-            <span class="dl-title">rapport.docx</span>
-            <span class="dl-desc">Word-rapport met methodiek</span>
-        </a>
-        <a class="download-card"
-           href="{{ url_for('session_download', sid=summary.sid, filename='inventory.json') }}">
-            <span class="ext json">JSON</span>
-            <span class="dl-title">inventory.json</span>
-            <span class="dl-desc">Machine-readable dump</span>
-        </a>
-    </div>
-</section>
+<div class="tabs">
+    <nav class="tab-nav" role="tablist">
+        <button class="tab-btn active" data-tab="bpmn" type="button">BPMN diagram</button>
+        <button class="tab-btn" data-tab="erd" type="button">ERD</button>
+        <button class="tab-btn" data-tab="rapport" type="button">Rapport</button>
+        <button class="tab-btn" data-tab="inventory" type="button">Inventarisatie</button>
+        <button class="tab-btn" data-tab="actors" type="button">Actoren &amp; ankers</button>
+        <button class="tab-btn" data-tab="downloads" type="button">Downloads</button>
+    </nav>
 
-<section>
-    <h2>Verwerkte bestanden</h2>
-    <table class="data-table">
-        <thead>
-        <tr>
-            <th>Bestand</th><th>Proces</th>
-            <th class="num">Tasks</th>
-            <th class="num">Data-objects</th>
-            <th class="num">Lanes</th>
-        </tr>
-        </thead>
-        <tbody>
-        {% for f in summary.files %}
-        <tr>
-            <td><code>{{ f.name }}</code></td>
-            <td>{{ f.process or '&mdash;'|safe }}</td>
-            <td class="num">{{ f.tasks }}</td>
-            <td class="num">{{ f.data_objects }}</td>
-            <td class="num">{{ f.lanes }}</td>
-        </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-</section>
+    <!-- ================== TAB: BPMN ================== -->
+    <section class="tab-panel active" data-panel="bpmn">
+        {% if summary.bpmn_files %}
+            <div class="bpmn-toolbar">
+                <label>Bestand:
+                    <select id="bpmn-select">
+                        {% for f in summary.bpmn_files %}
+                        <option value="{{ f }}">{{ f }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <div class="bpmn-controls">
+                    <button type="button" id="bpmn-zoom-in" class="btn-secondary">+</button>
+                    <button type="button" id="bpmn-zoom-out" class="btn-secondary">&minus;</button>
+                    <button type="button" id="bpmn-zoom-fit" class="btn-secondary">Fit</button>
+                </div>
+            </div>
+            <div id="bpmn-viewer" class="bpmn-viewer"></div>
+            <p class="viewer-hint" id="bpmn-status">Diagram laden...</p>
+        {% else %}
+            <p>Geen BPMN-bestanden om te tonen.</p>
+        {% endif %}
+    </section>
 
-<section>
-    <h2>Classificatie-verdeling</h2>
-    <div class="badge-row">
-        {% for cls, n in classification_counts.items() %}
-        <span class="badge cls-{{ cls|lower|replace(' ', '-') }}">
-            {{ cls }}: {{ n }}
-        </span>
-        {% endfor %}
-    </div>
-</section>
+    <!-- ================== TAB: ERD ================== -->
+    <section class="tab-panel" data-panel="erd">
+        {% if summary.mermaid_erd %}
+            <p class="lead">
+                Afgeleide ERD uit <strong>{{ summary.anchors|length }}</strong>
+                ankerobjecten en {{ summary.totals.data_objects }} data-objecten.
+                Relaties waar dezelfde taak twee objecten gebruikt (input/output).
+            </p>
+            <div class="mermaid-wrap">
+                <pre class="mermaid" id="mermaid-erd">{{ summary.mermaid_erd }}</pre>
+            </div>
+        {% else %}
+            <div class="empty">
+                <h3>Geen ERD af te leiden</h3>
+                <p>
+                    In deze BPMN('s) zijn geen of te weinig
+                    <code>&lt;bpmn:dataObject&gt;</code>-elementen gedefinieerd om
+                    een entiteitsdiagram te genereren.
+                </p>
+            </div>
+        {% endif %}
+    </section>
 
-<section>
-    <h2>Actoren ({{ summary.actors|length }})</h2>
-    <table class="data-table">
-        <thead>
-            <tr><th>Naam</th><th>Type</th><th>Komt voor in</th></tr>
-        </thead>
-        <tbody>
-        {% for a in summary.actors %}
-        <tr>
-            <td>{{ a.name }}</td>
-            <td><span class="badge {{ 'cls-extern' if a.type == 'Extern' else 'cls-intern' }}">{{ a.type }}</span></td>
-            <td><small>{{ a.appears_in|join(', ') }}</small></td>
-        </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-</section>
+    <!-- ================== TAB: RAPPORT ================== -->
+    <section class="tab-panel" data-panel="rapport">
+        <article class="report">
+            <h2 class="report-title">Data-inventarisatie op basis van BPMN</h2>
+            <p class="report-sub">
+                Automatisch gegenereerd overzicht van data-objecten, actoren en
+                ankerobjecten uit de aangeleverde BPMN-bestanden.
+            </p>
 
-{% if summary.anchors %}
-<section>
-    <h2>Ankerobjecten ({{ summary.anchors|length }})</h2>
-    <div class="anchor-row">
-        {% for name in summary.anchors %}
-        <span class="anchor">&#9875; {{ name }}</span>
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
+            <h3>1. Samenvatting</h3>
+            <p>
+                Verwerkt: <strong>{{ summary.totals.files }}</strong>
+                BPMN-bestand(en) met in totaal
+                <strong>{{ summary.totals.tasks }}</strong> processtappen,
+                <strong>{{ summary.totals.data_objects }}</strong> expliciete
+                data-objecten en <strong>{{ summary.totals.actors }}</strong>
+                unieke actoren (intern + extern). De data-inventarisatie telt
+                <strong>{{ summary.totals.rows }}</strong> regels.
+                <strong>{{ summary.totals.anchors }}</strong>
+                dataobject-naam/-namen komen in meerdere BPMN's voor en zijn
+                gemarkeerd als ankerobject.
+            </p>
 
-<section>
-    <h2>Inventarisatie ({{ summary.inventory|length }} rijen)</h2>
-    <div class="table-tools">
-        <input type="search" id="inv-filter" placeholder="Filter op proces, taak of dataobject..."
-               class="filter-input">
-    </div>
-    <div class="table-scroll">
-    <table class="data-table" id="inv-table">
-        <thead>
-        <tr>
-            <th>Proces</th>
-            <th>Stap-ID</th>
-            <th>Processtap</th>
-            <th>Dataobject</th>
-            <th>Attribuut</th>
-            <th>Classificatie</th>
-            <th>Bron</th>
-        </tr>
-        </thead>
-        <tbody>
-        {% for r in summary.inventory %}
-        <tr>
-            <td>{{ r.process }}</td>
-            <td><code>{{ r.step_id }}</code></td>
-            <td>{{ r.process_step }}</td>
-            <td>{{ r.data_object }}</td>
-            <td><small>{{ r.attribute }}</small></td>
-            <td><span class="badge cls-{{ r.classification|lower|replace(' ', '-') }}">{{ r.classification }}</span></td>
-            <td><small>{{ r.source }}</small></td>
-        </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</section>
+            <h3>2. Methodiek &mdash; hoe extraheren we wat uit BPMN?</h3>
+            <p>
+                Iedere BPMN 2.0 file is een XML-structuur. De parser leest de
+                elementen uit en mapt ze als volgt op de inventarisatie-categorieen:
+            </p>
+            <table class="data-table">
+                <thead><tr><th>BPMN-element</th><th>Categorie</th><th>Onderbouwing</th></tr></thead>
+                <tbody>
+                    <tr><td><code>&lt;bpmn:participant&gt;</code></td><td>Pool / organisatie</td><td>Zonder <code>processRef</code> &rarr; externe Actor; met <code>processRef</code> &rarr; eigen organisatie.</td></tr>
+                    <tr><td><code>&lt;bpmn:lane&gt;</code></td><td>Interne Actor (rol)</td><td>Naam van de lane = rolnaam.</td></tr>
+                    <tr><td><code>&lt;bpmn:task&gt;</code> e.v.</td><td>Processtap</td><td>Ieder subtype valt onder 'Activity' in BPMN 2.0.</td></tr>
+                    <tr><td><code>&lt;bpmn:dataObject&gt;</code></td><td>Entiteit / Dataobject</td><td>Geclusterd op naam over BPMN's heen.</td></tr>
+                    <tr><td><code>&lt;bpmn:dataStore&gt;</code></td><td>Bron (master)</td><td>Persistente opslag.</td></tr>
+                    <tr><td><code>&lt;bpmn:data(In|Out)putAssociation&gt;</code></td><td>Koppeling Taak &harr; Dataobject</td><td>Directe link.</td></tr>
+                    <tr><td><code>&lt;bpmn:*Gateway&gt;</code></td><td>Procesattribuut (routering)</td><td>Geen persoonsgegeven.</td></tr>
+                    <tr><td><code>&lt;bpmn:textAnnotation&gt;</code></td><td>Opmerking / business rule</td><td>Vrije tekst bij activiteit.</td></tr>
+                    <tr><td><code>&lt;bpmn:messageFlow&gt;</code></td><td>Communicatie tussen actoren</td><td>Pijl tussen pools.</td></tr>
+                </tbody>
+            </table>
 
-<p><a href="{{ url_for('index') }}" class="btn-secondary">&larr; Nieuwe upload</a></p>
+            <h3>3. Sensitiviteits-classificatie</h3>
+            <table class="data-table">
+                <thead><tr><th>Trefwoord(en) in naam</th><th>Classificatie</th><th>Reden</th></tr></thead>
+                <tbody>
+                    <tr><td>vakbond, lidmaatschap, gezondheid, etnisch, religie, politiek, biometr, seksueel</td><td><span class="badge cls-bijzonder-persoonsgegeven">Bijzonder persoonsgegeven</span></td><td>AVG art. 9</td></tr>
+                    <tr><td>iban, salaris, geboorte, bsn, machtiging, incasso, betaal, loon, bedrag, aandrager, bewijs</td><td><span class="badge cls-vertrouwelijk">Vertrouwelijk</span></td><td>Financieel of gevoelig</td></tr>
+                    <tr><td>(geen match)</td><td><span class="badge cls-intern">Intern</span></td><td>Standaard &mdash; geen PII-signaal</td></tr>
+                </tbody>
+            </table>
+
+            <h3>4. Verwerkte BPMN-bestanden</h3>
+            <table class="data-table">
+                <thead><tr><th>Bestand</th><th>Proces</th><th class="num">Lanes</th><th class="num">Tasks</th><th class="num">DataObj</th><th class="num">Gateways</th><th class="num">Events</th></tr></thead>
+                <tbody>
+                {% for f in summary.files %}
+                    <tr>
+                        <td><code>{{ f.name }}</code></td>
+                        <td>{{ f.process or '&mdash;'|safe }}</td>
+                        <td class="num">{{ f.lanes }}</td>
+                        <td class="num">{{ f.tasks }}</td>
+                        <td class="num">{{ f.data_objects }}</td>
+                        <td class="num">{{ f.gateways }}</td>
+                        <td class="num">{{ f.events }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+
+            <h3>5. Procesbeschrijving per BPMN</h3>
+            {% for b in summary.report_per_bpmn %}
+                <details class="process-details" {% if loop.first %}open{% endif %}>
+                    <summary><strong>{{ b.process or b.name }}</strong>
+                             <small>&mdash; {{ b.name }}</small></summary>
+
+                    {% if b.lanes %}
+                    <p><strong>Interne actoren:</strong>
+                        {% for l in b.lanes %}<span class="chip">{{ l }}</span>{% endfor %}
+                    </p>
+                    {% endif %}
+
+                    {% if b.external_actors %}
+                    <p><strong>Externe actoren / pools:</strong>
+                        {% for l in b.external_actors %}<span class="chip chip-extern">{{ l }}</span>{% endfor %}
+                    </p>
+                    {% endif %}
+
+                    {% if b.tasks %}
+                    <p><strong>Processtappen ({{ b.tasks|length }}):</strong></p>
+                    <table class="data-table">
+                        <thead><tr><th>Stap-ID</th><th>Taak</th><th>Subtype</th><th>Lane-id</th></tr></thead>
+                        <tbody>
+                        {% for t in b.tasks %}
+                            <tr><td><code>{{ t.id }}</code></td><td>{{ t.name }}</td><td><small>{{ t.subtype }}</small></td><td><small>{{ t.lane or '&mdash;'|safe }}</small></td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+
+                    {% if b.data_objects %}
+                    <p><strong>Data-objecten ({{ b.data_objects|length }}):</strong></p>
+                    <table class="data-table">
+                        <thead><tr><th>Naam</th><th>Subtype</th><th>BPMN-id</th></tr></thead>
+                        <tbody>
+                        {% for d in b.data_objects %}
+                            <tr><td>{{ d.name }}</td><td><small>{{ d.subtype }}</small></td><td><code>{{ d.id }}</code></td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+
+                    {% if b.annotations %}
+                    <p><strong>Opmerkingen / business rules:</strong></p>
+                    <ul>{% for a in b.annotations %}<li>{{ a }}</li>{% endfor %}</ul>
+                    {% endif %}
+                </details>
+            {% endfor %}
+        </article>
+    </section>
+
+    <!-- ================== TAB: INVENTORY ================== -->
+    <section class="tab-panel" data-panel="inventory">
+        <div class="table-tools">
+            <input type="search" id="inv-filter"
+                   placeholder="Filter op proces, taak of dataobject..."
+                   class="filter-input">
+            <div class="badge-row">
+                {% for cls, n in classification_counts.items() %}
+                <span class="badge cls-{{ cls|lower|replace(' ', '-') }}">{{ cls }}: {{ n }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="table-scroll">
+            <table class="data-table" id="inv-table">
+                <thead>
+                    <tr>
+                        <th>Proces</th><th>Stap-ID</th><th>Processtap</th>
+                        <th>Dataobject</th><th>Attribuut</th><th>Classificatie</th><th>Bron</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for r in summary.inventory %}
+                    <tr>
+                        <td>{{ r.process }}</td>
+                        <td><code>{{ r.step_id }}</code></td>
+                        <td>{{ r.process_step }}</td>
+                        <td>{{ r.data_object }}</td>
+                        <td><small>{{ r.attribute }}</small></td>
+                        <td><span class="badge cls-{{ r.classification|lower|replace(' ', '-') }}">{{ r.classification }}</span></td>
+                        <td><small>{{ r.source }}</small></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ================== TAB: ACTORS + ANCHORS ================== -->
+    <section class="tab-panel" data-panel="actors">
+        <h3>Actoren ({{ summary.actors|length }})</h3>
+        <table class="data-table">
+            <thead><tr><th>Naam</th><th>Type</th><th>Komt voor in</th><th>Onderbouwing</th></tr></thead>
+            <tbody>
+            {% for a in summary.actors %}
+                <tr>
+                    <td>{{ a.name }}</td>
+                    <td><span class="badge {{ 'cls-extern' if a.type == 'Extern' else 'cls-intern' }}">{{ a.type }}</span></td>
+                    <td><small>{{ a.appears_in|join(', ') }}</small></td>
+                    <td><small>{{ a.reason }}</small></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        {% if summary.anchors %}
+        <h3>Ankerobjecten ({{ summary.anchors|length }})</h3>
+        <table class="data-table">
+            <thead><tr><th>Naam</th><th>Voorkomt in</th></tr></thead>
+            <tbody>
+            {% for a in summary.anchors %}
+                <tr>
+                    <td><span class="anchor">&#9875; {{ a.name }}</span></td>
+                    <td><small>{{ a.processes|join(', ') }}</small></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">
+            <h3>Geen ankerobjecten</h3>
+            <p>Alle dataobject-namen komen maar in &eacute;&eacute;n BPMN voor.</p>
+        </div>
+        {% endif %}
+    </section>
+
+    <!-- ================== TAB: DOWNLOADS ================== -->
+    <section class="tab-panel" data-panel="downloads">
+        <p class="lead">Alle genereerde artifacts als bestand, voor archief of verdere bewerking.</p>
+        <div class="download-grid">
+            <a class="download-card" href="{{ url_for('session_download', sid=summary.sid, filename='data-inventarisatie.xlsx') }}">
+                <span class="ext xlsx">XLSX</span>
+                <span class="dl-title">data-inventarisatie.xlsx</span>
+                <span class="dl-desc">Excel: alle processen, actoren, ankers, legenda</span>
+            </a>
+            <a class="download-card" href="{{ url_for('session_download', sid=summary.sid, filename='bpmn-en-erd.drawio') }}">
+                <span class="ext drawio">DRAWIO</span>
+                <span class="dl-title">bpmn-en-erd.drawio</span>
+                <span class="dl-desc">Open in diagrams.net - BPMN pagina + ERD pagina</span>
+            </a>
+            <a class="download-card" href="{{ url_for('session_download', sid=summary.sid, filename='rapport.docx') }}">
+                <span class="ext docx">DOCX</span>
+                <span class="dl-title">rapport.docx</span>
+                <span class="dl-desc">Word-rapport met methodiek</span>
+            </a>
+            <a class="download-card" href="{{ url_for('session_download', sid=summary.sid, filename='inventory.json') }}">
+                <span class="ext json">JSON</span>
+                <span class="dl-title">inventory.json</span>
+                <span class="dl-desc">Machine-readable dump</span>
+            </a>
+        </div>
+    </section>
+</div>
+
+<p style="margin-top:28px;"><a href="{{ url_for('index') }}" class="btn-secondary">&larr; Nieuwe upload</a></p>
+
+<!-- ================== Scripts ================== -->
+<script src="https://unpkg.com/bpmn-js@17.11.1/dist/bpmn-navigated-viewer.development.js"></script>
+<script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+    window.__mermaid = mermaid;
+</script>
 
 <script>
 (function () {
+    // --- Tabs ---
+    var tabs = document.querySelectorAll('.tab-btn');
+    var panels = document.querySelectorAll('.tab-panel');
+    tabs.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var name = btn.getAttribute('data-tab');
+            tabs.forEach(function (b) { b.classList.toggle('active', b === btn); });
+            panels.forEach(function (p) {
+                p.classList.toggle('active', p.getAttribute('data-panel') === name);
+            });
+            if (name === 'erd') renderMermaid();
+            if (name === 'bpmn') setTimeout(fitBpmn, 50);
+        });
+    });
+
+    // --- Filter ---
     var input = document.getElementById('inv-filter');
     var table = document.getElementById('inv-table');
-    if (!input || !table) return;
-    input.addEventListener('input', function () {
-        var q = input.value.toLowerCase();
-        var rows = table.tBodies[0].rows;
-        for (var i = 0; i < rows.length; i++) {
-            rows[i].style.display =
-                rows[i].textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+    if (input && table) {
+        input.addEventListener('input', function () {
+            var q = input.value.toLowerCase();
+            var rows = table.tBodies[0].rows;
+            for (var i = 0; i < rows.length; i++) {
+                rows[i].style.display =
+                    rows[i].textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+            }
+        });
+    }
+
+    // --- Mermaid (lazy render bij tab-open) ---
+    var mermaidRendered = false;
+    function renderMermaid() {
+        if (mermaidRendered) return;
+        var el = document.getElementById('mermaid-erd');
+        if (!el || !window.__mermaid) return;
+        window.__mermaid.run({ nodes: [el] })
+            .then(function () { mermaidRendered = true; })
+            .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
+    }
+
+    // --- BPMN viewer ---
+    var sid = {{ summary.sid|tojson }};
+    var viewerEl = document.getElementById('bpmn-viewer');
+    var select   = document.getElementById('bpmn-select');
+    var status   = document.getElementById('bpmn-status');
+    var viewer   = null;
+
+    function ensureViewer() {
+        if (viewer || !viewerEl) return;
+        if (typeof BpmnJS === 'undefined') {
+            status.textContent = 'bpmn-js is nog niet geladen.';
+            return;
         }
-    });
+        viewer = new BpmnJS({ container: viewerEl });
+    }
+
+    function loadBpmn(name) {
+        ensureViewer();
+        if (!viewer) return;
+        status.textContent = 'Laden: ' + name;
+        fetch('/session/' + sid + '/bpmn/' + encodeURIComponent(name))
+            .then(function (r) { return r.text(); })
+            .then(function (xml) {
+                viewer.importXML(xml).then(function (result) {
+                    var canvas = viewer.get('canvas');
+                    canvas.zoom('fit-viewport');
+                    var warnings = (result && result.warnings) || [];
+                    status.textContent = warnings.length
+                        ? ('Geladen met ' + warnings.length + ' waarschuwing(en).')
+                        : 'Geladen.';
+                }).catch(function (err) {
+                    status.textContent = 'Importfout: ' + (err.message || err);
+                });
+            })
+            .catch(function (err) {
+                status.textContent = 'Kan bestand niet ophalen: ' + err;
+            });
+    }
+
+    function fitBpmn() {
+        if (viewer) viewer.get('canvas').zoom('fit-viewport');
+    }
+
+    if (select) {
+        select.addEventListener('change', function () { loadBpmn(select.value); });
+        // Initial load
+        if (select.value) loadBpmn(select.value);
+    }
+
+    var zin = document.getElementById('bpmn-zoom-in');
+    var zout = document.getElementById('bpmn-zoom-out');
+    var zfit = document.getElementById('bpmn-zoom-fit');
+    if (zin)  zin.addEventListener('click',  function () { if (viewer) viewer.get('zoomScroll').stepZoom(1); });
+    if (zout) zout.addEventListener('click', function () { if (viewer) viewer.get('zoomScroll').stepZoom(-1); });
+    if (zfit) zfit.addEventListener('click', fitBpmn);
 })();
 </script>
 {% endblock %}
