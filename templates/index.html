@@ -16,16 +16,87 @@
 {% endif %}
 
 <form method="post" action="{{ url_for('run_pipeline') }}"
-      enctype="multipart/form-data" class="upload-card">
-    <label class="file-drop">
-        <input type="file" name="bpmn_files" multiple accept=".bpmn,.xml" required>
+      enctype="multipart/form-data" class="upload-card" id="upload-form">
+    <label class="file-drop" id="drop-zone">
+        <input type="file" name="bpmn_files" id="file-input"
+               multiple accept=".bpmn,.xml" required>
         <span class="file-drop-text">
             Klik of sleep <strong>.bpmn</strong> bestanden hierheen
         </span>
         <span class="file-drop-hint">Max {{ max_mb }} MB per bestand</span>
+        <ul class="file-list" id="file-list"></ul>
     </label>
-    <button type="submit" class="btn-primary">Genereer inventarisatie</button>
+    <button type="submit" class="btn-primary" id="submit-btn" disabled>
+        Genereer inventarisatie
+    </button>
 </form>
+
+<script>
+(function () {
+    var dropZone  = document.getElementById('drop-zone');
+    var input     = document.getElementById('file-input');
+    var list      = document.getElementById('file-list');
+    var submitBtn = document.getElementById('submit-btn');
+
+    function render() {
+        list.innerHTML = '';
+        if (!input.files || input.files.length === 0) {
+            submitBtn.disabled = true;
+            dropZone.classList.remove('has-files');
+            return;
+        }
+        dropZone.classList.add('has-files');
+        submitBtn.disabled = false;
+        for (var i = 0; i < input.files.length; i++) {
+            var f = input.files[i];
+            var li = document.createElement('li');
+            li.textContent = f.name + ' (' + Math.round(f.size / 1024) + ' KB)';
+            list.appendChild(li);
+        }
+    }
+
+    input.addEventListener('change', render);
+
+    // Prevent browser from opening the file on drop anywhere on the page
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(function (ev) {
+        window.addEventListener(ev, function (e) {
+            if (e.target.closest('#drop-zone')) return;
+            e.preventDefault();
+        });
+    });
+
+    dropZone.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', function (e) {
+        if (e.target === dropZone) dropZone.classList.remove('drag-over');
+    });
+    dropZone.addEventListener('drop', function (e) {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        if (!e.dataTransfer || !e.dataTransfer.files) return;
+
+        // Filter naar .bpmn/.xml
+        var allowed = [];
+        for (var i = 0; i < e.dataTransfer.files.length; i++) {
+            var f = e.dataTransfer.files[i];
+            var ext = f.name.toLowerCase().split('.').pop();
+            if (ext === 'bpmn' || ext === 'xml') allowed.push(f);
+        }
+        if (allowed.length === 0) {
+            alert('Alleen .bpmn of .xml bestanden worden geaccepteerd.');
+            return;
+        }
+
+        // Assign naar het input element zodat form submit de files meestuurt
+        var dt = new DataTransfer();
+        allowed.forEach(function (f) { dt.items.add(f); });
+        input.files = dt.files;
+        render();
+    });
+})();
+</script>
 
 <section class="info-grid">
     <article class="info-card">

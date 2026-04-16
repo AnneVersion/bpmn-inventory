@@ -98,9 +98,39 @@ a:hover { text-decoration: underline; }
     transition: border-color .15s, background .15s;
 }
 .file-drop:hover { border-color: var(--primary); background: #f2f6fe; }
+.file-drop.drag-over {
+    border-color: var(--primary);
+    background: #e5efff;
+    transform: scale(1.01);
+}
+.file-drop.has-files {
+    border-style: solid;
+    background: #f5f8ff;
+    text-align: left;
+}
 .file-drop input[type=file] { display: none; }
-.file-drop-text { display: block; font-size: 1.05rem; color: var(--text); }
-.file-drop-hint { display: block; font-size: .85rem; color: var(--muted); margin-top: 4px; }
+.file-drop-text { display: block; font-size: 1.05rem; color: var(--text); text-align: center; }
+.file-drop-hint { display: block; font-size: .85rem; color: var(--muted); margin-top: 4px; text-align: center; }
+
+.file-list {
+    list-style: none;
+    padding: 0;
+    margin: 14px 0 0;
+    max-height: 160px;
+    overflow-y: auto;
+    font-size: .9rem;
+}
+.file-list:empty { display: none; }
+.file-list li {
+    padding: 6px 10px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    margin-bottom: 4px;
+    font-family: "Consolas", "SFMono-Regular", ui-monospace, monospace;
+}
+
+.btn-primary:disabled { background: #9aaad5; cursor: not-allowed; }
 
 .btn-primary, .btn-secondary {
     display: inline-block;
