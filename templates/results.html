@@ -48,13 +48,27 @@
                     </select>
                 </label>
                 <div class="bpmn-controls">
+                    <label class="toggle-findings">
+                        <input type="checkbox" id="toggle-findings" checked>
+                        <span>Toon fouten</span>
+                    </label>
                     <button type="button" id="bpmn-zoom-in" class="btn-secondary">+</button>
                     <button type="button" id="bpmn-zoom-out" class="btn-secondary">&minus;</button>
                     <button type="button" id="bpmn-zoom-fit" class="btn-secondary">Fit</button>
                 </div>
             </div>
+            <div class="bpmn-legend" id="bpmn-legend">
+                <span class="lg-item"><span class="lg-swatch sev-error"></span>Error</span>
+                <span class="lg-item"><span class="lg-swatch sev-warning"></span>Warning</span>
+                <span class="lg-item"><span class="lg-swatch sev-info"></span>Info</span>
+                <span class="lg-spacer"></span>
+                <span class="lg-count" id="bpmn-finding-count"></span>
+            </div>
             <div id="bpmn-viewer" class="bpmn-viewer"></div>
             <p class="viewer-hint" id="bpmn-status">Diagram laden...</p>
+
+            <!-- Findings voor het huidige BPMN-bestand (per-rij gerendert) -->
+            <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
         {% else %}
             <p>Geen BPMN-bestanden om te tonen.</p>
         {% endif %}
@@ -475,11 +489,16 @@
     }
 
     // --- BPMN viewer ---
-    var sid = {{ summary.sid|tojson }};
-    var viewerEl = document.getElementById('bpmn-viewer');
-    var select   = document.getElementById('bpmn-select');
-    var status   = document.getElementById('bpmn-status');
-    var viewer   = null;
+    var sid       = {{ summary.sid|tojson }};
+    var findings  = {{ summary.findings|tojson }};
+    var viewerEl  = document.getElementById('bpmn-viewer');
+    var select    = document.getElementById('bpmn-select');
+    var status    = document.getElementById('bpmn-status');
+    var toggle    = document.getElementById('toggle-findings');
+    var countEl   = document.getElementById('bpmn-finding-count');
+    var listEl    = document.getElementById('bpmn-finding-list');
+    var viewer    = null;
+    var overlayIds = [];
 
     function ensureViewer() {
         if (viewer || !viewerEl) return;
@@ -488,6 +507,107 @@
             return;
         }
         viewer = new BpmnJS({ container: viewerEl });
+    }
+
+    function clearFindings() {
+        if (!viewer) return;
+        var overlays = viewer.get('overlays');
+        overlayIds.forEach(function (oid) {
+            try { overlays.remove(oid); } catch (e) {}
+        });
+        overlayIds = [];
+        var canvas = viewer.get('canvas');
+        var reg = viewer.get('elementRegistry');
+        reg.forEach(function (el) {
+            ['bpmn-finding-error','bpmn-finding-warning','bpmn-finding-info']
+              .forEach(function (c) {
+                if (canvas.hasMarker(el.id, c)) canvas.removeMarker(el.id, c);
+              });
+        });
+        if (listEl) listEl.innerHTML = '';
+        if (countEl) countEl.textContent = '';
+    }
+
+    function applyFindings(fileName) {
+        if (!viewer) return;
+        clearFindings();
+        if (!toggle || !toggle.checked) return;
+
+        var canvas   = viewer.get('canvas');
+        var overlays = viewer.get('overlays');
+        var reg      = viewer.get('elementRegistry');
+
+        var sevRank = {error: 0, warning: 1, info: 2};
+        // hoogste severity per element id
+        var worstByEl = {};
+        var relevant = findings.filter(function (f) {
+            return f.source_file === fileName && f.element_id;
+        });
+
+        relevant.forEach(function (f) {
+            var cur = worstByEl[f.element_id];
+            if (cur === undefined || sevRank[f.severity] < sevRank[cur]) {
+                worstByEl[f.element_id] = f.severity;
+            }
+        });
+
+        var added = 0;
+        Object.keys(worstByEl).forEach(function (id) {
+            if (!reg.get(id)) return;            // element bestaat niet in DI
+            var sev = worstByEl[id];
+            canvas.addMarker(id, 'bpmn-finding-' + sev);
+
+            // Overlay met sev-badge + tooltip (alle findings voor dit element)
+            var msgs = relevant.filter(function (f) { return f.element_id === id; })
+                               .map(function (f) {
+                                  return '[' + f.rule + '] ' + f.message;
+                               }).join('\n');
+            var badge = document.createElement('div');
+            badge.className = 'bpmn-overlay sev-' + sev;
+            badge.title = msgs;
+            badge.textContent = sev === 'error' ? '!' : (sev === 'warning' ? '!' : 'i');
+            var oid = overlays.add(id, 'finding', {
+                position: { top: -8, right: 8 },
+                html: badge
+            });
+            overlayIds.push(oid);
+            added++;
+        });
+
+        // Update legend count
+        var counts = { error: 0, warning: 0, info: 0 };
+        relevant.forEach(function (f) { counts[f.severity] = (counts[f.severity]||0) + 1; });
+        if (countEl) {
+            countEl.innerHTML =
+                (counts.error   ? '<strong class="c-error">'   + counts.error   + ' error</strong>'   : '') +
+                (counts.warning ? ' <strong class="c-warn">'   + counts.warning + ' warning</strong>' : '') +
+                (counts.info    ? ' <strong class="c-info">'   + counts.info    + ' info</strong>'    : '') +
+                (added ? '' : '<span class="muted">geen findings voor dit bestand</span>');
+        }
+
+        // Lijst onder het diagram (klikbaar naar element)
+        if (listEl) {
+            relevant.sort(function (a, b) {
+                return sevRank[a.severity] - sevRank[b.severity];
+            });
+            listEl.innerHTML = relevant.map(function (f) {
+                return '<div class="bpmn-finding-row" data-eid="' + f.element_id + '">' +
+                       '<span class="sev-badge sev-' + f.severity + '">' + f.severity.toUpperCase() + '</span>' +
+                       '<code class="rule">' + f.rule + '</code>' +
+                       '<strong>' + (f.element_name || '(geen naam)') + '</strong>' +
+                       '<span class="msg">' + f.message + '</span>' +
+                       '</div>';
+            }).join('');
+            // Klik -> centreer/zoom op element
+            listEl.querySelectorAll('.bpmn-finding-row').forEach(function (row) {
+                row.addEventListener('click', function () {
+                    var id = row.getAttribute('data-eid');
+                    var el = reg.get(id);
+                    if (!el) return;
+                    canvas.scrollToElement(el, { top: 200, bottom: 200, left: 200, right: 200 });
+                });
+            });
+        }
     }
 
     function loadBpmn(name) {
@@ -504,6 +624,7 @@
                     status.textContent = warnings.length
                         ? ('Geladen met ' + warnings.length + ' waarschuwing(en).')
                         : 'Geladen.';
+                    applyFindings(name);
                 }).catch(function (err) {
                     status.textContent = 'Importfout: ' + (err.message || err);
                 });
@@ -519,9 +640,11 @@
 
     if (select) {
         select.addEventListener('change', function () { loadBpmn(select.value); });
-        // Initial load
         if (select.value) loadBpmn(select.value);
     }
+    if (toggle) toggle.addEventListener('change', function () {
+        if (select) applyFindings(select.value);
+    });
 
     var zin = document.getElementById('bpmn-zoom-in');
     var zout = document.getElementById('bpmn-zoom-out');
