@@ -254,6 +254,371 @@ def project_add_bpmn(pid: str):
     return redirect(url_for("project_detail", pid=pid))
 
 
+def _regenerate_project_summary(pid: str) -> dict:
+    """Draai full pipeline op alle BPMNs in een project + schrijf summary.json.
+
+    Spiegel van `_regenerate_session_summary` maar met projects als
+    scope. url_base wordt /project/<pid> zodat results.html dezelfde
+    apply/improved/bpmn-routes kan vinden.
+    """
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        raise ValueError("Project niet gevonden")
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    out_dir = bpmn_project.project_output_dir(ROOT, pid)
+
+    bpmns = parse_all(data_dir)
+    if not bpmns:
+        raise ValueError("Geen BPMNs in dit project")
+
+    model = merge(bpmns)
+    bpmn_defs.auto_discover(ROOT, model, session_id=pid)
+    user_defs = bpmn_defs.load(ROOT)
+    findings = review(model, user_defs=user_defs)
+    erd = _build_smart_erd(model, user_defs)
+    findings = findings + erd["cross_findings"]
+    findings_summary = summarize(findings)
+
+    saved_files = [p.name for p in sorted(data_dir.glob("*.bpmn"))] + \
+                  [p.name for p in sorted(data_dir.glob("*.xml"))]
+
+    # Artifacts
+    write_xlsx(model, str(out_dir / "data-inventarisatie.xlsx"))
+    write_drawio(model, str(out_dir / "bpmn-en-erd.drawio"))
+    write_docx(model, str(out_dir / "rapport.docx"))
+    with (out_dir / "inventory.json").open("w", encoding="utf-8") as fh:
+        json.dump({"files": [b.source_file for b in bpmns],
+                   "inventory": [asdict(r) for r in model.inventory]},
+                  fh, indent=2, ensure_ascii=False)
+
+    # Zorg dat elke BPMN v1 heeft
+    for f in saved_files:
+        bpmn_apply.ensure_v1(pdir, f)
+    versions_by_file = {f: bpmn_apply.load_versions(pdir, f)
+                        for f in saved_files}
+
+    summary = {
+        "sid": pid,                     # results.html gebruikt 'sid' voor IDs
+        "project_id": pid,
+        "project_name": meta.get("name", ""),
+        "url_base": f"/project/{pid}",
+        "is_project": True,
+        "bpmn_files": saved_files,
+        "versions": versions_by_file,
+        "files": [{"name": b.source_file, "process": b.process_name,
+                   "tasks": len(b.tasks),
+                   "data_objects": len(b.data_objects),
+                   "lanes": len(b.lanes),
+                   "gateways": len(b.gateways),
+                   "events": len(b.events)} for b in bpmns],
+        "totals": {"files": len(bpmns),
+                   "actors": len(model.actors),
+                   "anchors": len(model.anchor_objects()),
+                   "rows": len(model.inventory),
+                   "tasks": sum(len(b.tasks) for b in bpmns),
+                   "data_objects": sum(len(b.data_objects) for b in bpmns)},
+        "actors": [{"name": a.name,
+                    "type": "Extern" if a.subtype == "extern" else "Intern",
+                    "appears_in": a.evidence.get("appears_in", []),
+                    "reason": a.evidence.get("classification_reason", "")}
+                   for a in model.actors],
+        "anchors": [{"name": n,
+                     "processes": sorted({sf for sf, _ in model.data_object_index[n.lower()]})}
+                    for n in model.anchor_objects()],
+        "inventory": [asdict(r) for r in model.inventory],
+        "mermaid_erd": erd["mermaid"],
+        "erd": erd["summary"],
+        "findings": findings,
+        "findings_summary": findings_summary,
+        "report_per_bpmn": [{
+            "name": b.source_file, "process": b.process_name,
+            "lanes": [l.name for l in b.lanes],
+            "external_actors": [p.name for p in b.participants
+                                if not p.attributes.get("processRef")],
+            "tasks": [{"id": f"A{i+1}", "name": t.name,
+                       "subtype": t.subtype, "lane": t.lane_id or ""}
+                      for i, t in enumerate(b.tasks)],
+            "data_objects": [{"name": d.name, "subtype": d.subtype, "id": d.id}
+                             for d in b.data_objects],
+            "annotations": [a.attributes.get("text", "") for a in b.annotations],
+        } for b in model.bpmns],
+    }
+    with (out_dir / "summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, ensure_ascii=False)
+    return summary
+
+
+@app.route("/project/<pid>/analyze", methods=["POST"])
+def project_analyze(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    try:
+        _regenerate_project_summary(pid)
+    except ValueError as e:
+        return str(e), 400
+    except Exception as e:
+        return f"Analyse mislukt: {e}", 500
+    return redirect(url_for("project_results", pid=pid))
+
+
+@app.route("/project/<pid>/results")
+def project_results(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    summary_path = bpmn_project.project_output_dir(ROOT, pid) / "summary.json"
+    if not summary_path.exists():
+        # Analyse is nog niet gedraaid; stuur terug naar detail met hint
+        return redirect(url_for("project_detail", pid=pid) + "?need_analyze=1")
+    with summary_path.open("r", encoding="utf-8") as fh:
+        summary = json.load(fh)
+    # Zelfde defaults als session_view
+    for k in ("bpmn_files", "mermaid_erd", "report_per_bpmn", "findings",
+              "actors", "anchors", "inventory", "files"):
+        summary.setdefault(k, [] if k != "mermaid_erd" else "")
+    summary.setdefault("erd", {"entities": [], "relationships": []})
+    summary.setdefault("totals", {})
+    for k in ("files", "actors", "anchors", "rows", "tasks", "data_objects"):
+        summary["totals"].setdefault(k, 0)
+    summary.setdefault("findings_summary", {"total": 0, "by_severity": {},
+                                             "by_rule": {}, "rules_catalog": []})
+    summary.setdefault("url_base", f"/project/{pid}")
+    summary.setdefault("versions", {})
+    if summary["anchors"] and isinstance(summary["anchors"][0], str):
+        summary["anchors"] = [{"name": n, "processes": []}
+                              for n in summary["anchors"]]
+
+    classification_counts: dict[str, int] = {}
+    for row in summary["inventory"]:
+        classification_counts[row["classification"]] = \
+            classification_counts.get(row["classification"], 0) + 1
+
+    return render_template("results.html",
+                           summary=summary,
+                           classification_counts=classification_counts)
+
+
+# --- Project-scoped per-file routes (mirroring session-routes) ---
+
+@app.route("/project/<pid>/bpmn/<path:filename>")
+def project_bpmn_raw(pid: str, filename: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    safe = secure_filename(filename)
+    if not safe or not (data_dir / safe).exists():
+        abort(404)
+    return send_from_directory(str(data_dir), safe,
+                               mimetype="application/xml")
+
+
+@app.route("/project/<pid>/bpmn-original/<path:filename>")
+def project_bpmn_original(pid: str, filename: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    safe = secure_filename(filename)
+    base = Path(safe).stem
+    ext = Path(safe).suffix
+    v1 = pdir / "versions" / base / f"v1{ext}"
+    if v1.exists():
+        return send_from_directory(str(v1.parent), v1.name,
+                                   mimetype="application/xml")
+    data_file = bpmn_project.project_data_dir(ROOT, pid) / safe
+    if data_file.exists():
+        return send_from_directory(str(data_file.parent), safe,
+                                   mimetype="application/xml")
+    abort(404)
+
+
+@app.route("/project/<pid>/improved/<path:filename>")
+def project_improved_bpmn(pid: str, filename: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    safe = secure_filename(filename)
+    base = Path(safe).stem
+    ext = Path(safe).suffix
+    source = pdir / "versions" / base / f"v1{ext}"
+    if not source.exists():
+        source = bpmn_project.project_data_dir(ROOT, pid) / safe
+    if not source.exists():
+        abort(404)
+
+    # Findings opnieuw voor v1 van deze BPMN
+    user_defs = bpmn_defs.load(ROOT)
+    import bpmn_parser as _bp
+    parsed = _bp.parse_bpmn(source)
+    from merger import merge as _merge
+    model = _merge([parsed])
+    findings = review(model, user_defs=user_defs)
+
+    try:
+        xml_bytes, _changes = bpmn_apply.build_improved_preview(
+            source, findings, user_defs
+        )
+    except Exception as e:
+        return f"Preview-fout: {e}", 500
+    from flask import Response
+    return Response(xml_bytes, mimetype="application/xml")
+
+
+@app.route("/project/<pid>/improved-summary/<path:filename>")
+def project_improved_summary(pid: str, filename: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    safe = secure_filename(filename)
+    base = Path(safe).stem
+    ext = Path(safe).suffix
+    source = pdir / "versions" / base / f"v1{ext}"
+    if not source.exists():
+        source = bpmn_project.project_data_dir(ROOT, pid) / safe
+    if not source.exists():
+        abort(404)
+    user_defs = bpmn_defs.load(ROOT)
+    import bpmn_parser as _bp
+    parsed = _bp.parse_bpmn(source)
+    from merger import merge as _merge
+    model = _merge([parsed])
+    findings = review(model, user_defs=user_defs)
+    try:
+        _xml, changes = bpmn_apply.build_improved_preview(
+            source, findings, user_defs
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"changes": changes})
+
+
+@app.route("/project/<pid>/apply-fix", methods=["POST"])
+def project_apply_fix(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        return jsonify({"error": "Ongeldig project"}), 404
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    payload = request.get_json(silent=True) or {}
+    rule = (payload.get("rule") or "").strip()
+    file_name = secure_filename(payload.get("file", ""))
+    params = payload.get("params") or {}
+    if not (rule and file_name):
+        return jsonify({"error": "rule en file verplicht"}), 400
+    data_file = bpmn_project.project_data_dir(ROOT, pid) / file_name
+    if not data_file.exists():
+        return jsonify({"error": f"Bestand '{file_name}' niet gevonden"}), 404
+    ok, description = bpmn_apply.apply_fix(data_file, rule, params)
+    if not ok:
+        return jsonify({"error": description}), 400
+    bpmn_apply.ensure_v1(pdir, file_name)
+    entry = bpmn_apply.add_fix_version(
+        pdir, file_name,
+        patched_bytes=data_file.read_bytes(),
+        description=f"[{rule}] {description}",
+        applied_finding=payload,
+    )
+    try:
+        _regenerate_project_summary(pid)
+    except Exception as e:
+        return jsonify({"error": f"Regeneratie mislukt: {e}"}), 500
+    return jsonify({"ok": True, "new_version": entry,
+                    "description": description})
+
+
+@app.route("/project/<pid>/apply-default-flow", methods=["POST"])
+def project_apply_default_flow(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        return jsonify({"error": "Ongeldig project"}), 404
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    payload = request.get_json(silent=True) or {}
+    file_name = secure_filename(payload.get("file", ""))
+    gateway_id = payload.get("gateway_id", "")
+    default_flow_id = payload.get("default_flow_id") or None
+    guess = bool(payload.get("guess_conditions", True))
+    if not (file_name and gateway_id):
+        return jsonify({"error": "Geef file + gateway_id"}), 400
+    data_file = bpmn_project.project_data_dir(ROOT, pid) / file_name
+    if not data_file.exists():
+        return jsonify({"error": f"Bestand '{file_name}' niet gevonden"}), 404
+    try:
+        bpmn_apply.apply_set_default_flow(
+            data_file, gateway_id=gateway_id,
+            default_flow_id=default_flow_id,
+            guess_conditions=guess,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Fix mislukte: {e}"}), 500
+    bpmn_apply.ensure_v1(pdir, file_name)
+    entry = bpmn_apply.add_fix_version(
+        pdir, file_name,
+        patched_bytes=data_file.read_bytes(),
+        description=(f"Default-flow op {default_flow_id}"
+                     if default_flow_id else "Conditie-stubs toegevoegd"),
+        applied_finding=payload,
+    )
+    try:
+        _regenerate_project_summary(pid)
+    except Exception as e:
+        return jsonify({"error": f"Regeneratie mislukt: {e}"}), 500
+    return jsonify({"ok": True, "new_version": entry})
+
+
+@app.route("/project/<pid>/upload-version", methods=["POST"])
+def project_upload_version(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    target = secure_filename(request.form.get("target", ""))
+    f = request.files.get("bpmn_file")
+    if not target or not f:
+        return "Geef target en bpmn_file mee.", 400
+    if not (bpmn_project.project_data_dir(ROOT, pid) / target).exists():
+        return f"Onbekend target-bestand: {target}", 404
+    if Path(f.filename).suffix.lower() not in ALLOWED_EXT:
+        return "Alleen .bpmn of .xml toegestaan.", 400
+    bpmn_apply.ensure_v1(pdir, target)
+    bpmn_apply.add_upload_version(
+        pdir, target, bytes_=f.read(),
+        description=f"Nieuwe upload ({f.filename})",
+    )
+    try:
+        _regenerate_project_summary(pid)
+    except Exception as e:
+        return f"Regeneratie mislukt: {e}", 500
+    return redirect(url_for("project_results", pid=pid))
+
+
+@app.route("/project/<pid>/activate", methods=["POST"])
+def project_activate_version(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        return jsonify({"error": "Ongeldig project"}), 404
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    payload = request.get_json(silent=True) or {}
+    file_name = secure_filename(payload.get("file", ""))
+    version = int(payload.get("version", 0) or 0)
+    if not (file_name and version):
+        return jsonify({"error": "Geef file + version"}), 400
+    ok = bpmn_apply.activate_version(pdir, file_name, version)
+    if not ok:
+        return jsonify({"error": "Versie niet gevonden"}), 404
+    try:
+        _regenerate_project_summary(pid)
+    except Exception as e:
+        return jsonify({"error": f"Regeneratie mislukt: {e}"}), 500
+    return jsonify({"ok": True})
+
+
+@app.route("/project/<pid>/download/<path:filename>")
+def project_download(pid: str, filename: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    out_dir = bpmn_project.project_output_dir(ROOT, pid)
+    if not out_dir.exists():
+        abort(404)
+    return send_from_directory(str(out_dir), filename, as_attachment=True)
+
+
 @app.route("/project/<pid>/delete", methods=["POST"])
 def project_delete(pid: str):
     if not bpmn_project.is_valid_pid(pid):

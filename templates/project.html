@@ -45,7 +45,24 @@
         <p>Voeg je eerste .bpmn-bestand toe via het formulier hierboven.</p>
     </div>
     {% else %}
-    <table class="data-table">
+    <div class="project-actions">
+        <form method="post"
+              action="{{ url_for('project_analyze', pid=project.id) }}"
+              style="display:inline;">
+            <button type="submit" class="btn-primary btn-large">
+                Analyseer alle BPMNs &rarr;
+            </button>
+        </form>
+        <a href="{{ url_for('project_results', pid=project.id) }}"
+           class="btn-secondary">Resultaten bekijken (als al geanalyseerd)</a>
+    </div>
+    {% if request.args.get('need_analyze') %}
+    <div class="alert" style="margin-top:10px;">
+        Er is nog geen analyse uitgevoerd. Klik op <strong>Analyseer alle
+        BPMNs</strong> hierboven.
+    </div>
+    {% endif %}
+    <table class="data-table" style="margin-top:14px;">
         <thead>
             <tr><th>Bestand</th><th>Positie in volgorde</th><th>Acties</th></tr>
         </thead>
