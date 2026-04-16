@@ -79,10 +79,21 @@
             <div class="diagram-pair">
                 <div class="diagram-block">
                     <div class="diagram-label diagram-label-current">
-                        Huidige versie <span class="label-tag">ORIGINEEL</span>
+                        Origineel (zoals geupload)
+                        <span class="label-tag">v1</span>
                     </div>
+
+                    <!-- Pijnpunten: prominent boven het diagram -->
+                    <div class="painpoints" id="painpoints">
+                        <em>Pijnpunten worden bepaald zodra het diagram geladen is...</em>
+                    </div>
+
                     <div id="bpmn-viewer" class="bpmn-viewer"></div>
                     <p class="viewer-hint" id="bpmn-status">Diagram laden...</p>
+
+                    <!-- Per-finding rij met Toepassen-knop (was eerder onder beide) -->
+                    <h4 class="findings-heading">Pijnpunten per element</h4>
+                    <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
                 </div>
 
                 <div class="diagram-block diagram-block-improved">
@@ -97,10 +108,6 @@
                     <p class="viewer-hint" id="improved-status">Preview laden...</p>
                 </div>
             </div>
-
-            <!-- Findings voor het huidige BPMN-bestand -->
-            <h4 class="findings-heading">Findings voor dit bestand</h4>
-            <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
         {% else %}
             <p>Geen BPMN-bestanden om te tonen.</p>
         {% endif %}
@@ -643,10 +650,54 @@
         if (countEl) countEl.textContent = '';
     }
 
+    function renderPainpoints(relevant) {
+        var el = document.getElementById('painpoints');
+        if (!el) return;
+        if (!relevant.length) {
+            el.innerHTML = '<strong class="pp-ok">✓ Geen pijnpunten</strong> — dit bestand voldoet aan alle checks.';
+            el.className = 'painpoints pp-clean';
+            return;
+        }
+        var counts = { error: 0, warning: 0, info: 0 };
+        var rulesBySev = { error: {}, warning: {}, info: {} };
+        relevant.forEach(function (f) {
+            counts[f.severity] = (counts[f.severity] || 0) + 1;
+            (rulesBySev[f.severity] = rulesBySev[f.severity] || {})[f.rule] =
+                (rulesBySev[f.severity][f.rule] || 0) + 1;
+        });
+        function ruleLine(sev) {
+            var rules = rulesBySev[sev];
+            if (!rules || !Object.keys(rules).length) return '';
+            return Object.keys(rules).sort().map(function (r) {
+                return '<code>' + r + '</code>×' + rules[r];
+            }).join(' ');
+        }
+        var parts = [];
+        if (counts.error) {
+            parts.push('<span class="pp-stat pp-error"><strong>' + counts.error +
+                       '</strong> error' + (counts.error===1?'':'s') +
+                       ' <small>(' + ruleLine('error') + ')</small></span>');
+        }
+        if (counts.warning) {
+            parts.push('<span class="pp-stat pp-warning"><strong>' + counts.warning +
+                       '</strong> warning' + (counts.warning===1?'':'s') +
+                       ' <small>(' + ruleLine('warning') + ')</small></span>');
+        }
+        if (counts.info) {
+            parts.push('<span class="pp-stat pp-info"><strong>' + counts.info +
+                       '</strong> info <small>(' + ruleLine('info') + ')</small></span>');
+        }
+        el.className = 'painpoints';
+        el.innerHTML = '<span class="pp-title">Pijnpunten:</span> ' + parts.join(' · ');
+    }
+
     function applyFindings(fileName) {
         if (!viewer) return;
         clearFindings();
-        if (!toggle || !toggle.checked) return;
+        if (!toggle || !toggle.checked) {
+            renderPainpoints([]);
+            return;
+        }
 
         var canvas   = viewer.get('canvas');
         var overlays = viewer.get('overlays');
@@ -658,6 +709,8 @@
         var relevant = findings.filter(function (f) {
             return f.source_file === fileName && f.element_id;
         });
+
+        renderPainpoints(relevant);
 
         relevant.forEach(function (f) {
             var cur = worstByEl[f.element_id];
@@ -1152,8 +1205,9 @@
     function loadBpmn(name) {
         ensureViewer();
         if (!viewer) return;
-        status.textContent = 'Laden: ' + name;
-        fetch(urlBase + '/bpmn/' + encodeURIComponent(name))
+        status.textContent = 'Laden: ' + name + ' (v1 origineel)';
+        // Altijd v1 = de oorspronkelijke upload, niet de actieve versie.
+        fetch(urlBase + '/bpmn-original/' + encodeURIComponent(name))
             .then(function (r) { return r.text(); })
             .then(function (xml) {
                 viewer.importXML(xml).then(function (result) {

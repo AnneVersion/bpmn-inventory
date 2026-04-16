@@ -396,6 +396,10 @@ def build_improved_preview(
                 "element": f.get("element_name") or gw_id,
                 "description": (f"Overbodige gateway '{f.get('element_name') or gw_id}' "
                                 "verwijderd — inkomende flow direct doorgezet."),
+                # Geen highlight in preview: element is weg
+                "highlight_task_id": "",
+                "highlight_label": "",
+                "change_type": "removed",
             })
 
     # R101 dataObjects toevoegen
@@ -417,6 +421,9 @@ def build_improved_preview(
                 "description": (f"<bpmn:dataObject name=\"{obj}\"> toegevoegd "
                                 f"+ {action}-association op taak "
                                 f"'{f.get('element_name')}'."),
+                "highlight_task_id": task_id,
+                "highlight_label": f"+ dataObject {obj} ({action})",
+                "change_type": "added",
             })
 
     # R102 dataStores toevoegen
@@ -438,6 +445,9 @@ def build_improved_preview(
                 "description": (f"<bpmn:dataStoreReference name=\"{system}\"> "
                                 f"toegevoegd + {action}-association op taak "
                                 f"'{f.get('element_name')}'."),
+                "highlight_task_id": task_id,
+                "highlight_label": f"+ dataStore {system} ({action})",
+                "change_type": "added",
             })
 
     buf = io.BytesIO()

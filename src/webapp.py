@@ -688,28 +688,58 @@ def definitions_delete_object(name: str):
     return jsonify({"ok": True, "data": bpmn_defs.load(ROOT)})
 
 
+def _resolve_source_file(sdir: Path, safe_filename: str) -> Path | None:
+    """Geef het pad naar v1 als aanwezig, anders de actieve data-file.
+
+    Zo worden preview + original altijd gebaseerd op dezelfde originele
+    upload, onafhankelijk van hoeveel fixes er al zijn toegepast.
+    """
+    base = Path(safe_filename).stem
+    ext = Path(safe_filename).suffix
+    v1 = sdir / "versions" / base / f"v1{ext}"
+    if v1.exists():
+        return v1
+    data_file = sdir / "data" / safe_filename
+    return data_file if data_file.exists() else None
+
+
+def _findings_for_original(sdir: Path, safe_filename: str,
+                           user_defs: dict) -> list[dict]:
+    """Bereken findings opnieuw tegen v1 (niet tegen de actieve versie).
+
+    Zo blijft de preview consistent: hij toont altijd wat er zou zijn
+    als je vanaf v1 alle safe auto-fixes toepast, niet 'wat er nog
+    moet nadat je al een paar fixes hebt gedaan'.
+    """
+    v1 = _resolve_source_file(sdir, safe_filename)
+    if v1 is None:
+        return []
+    # Parse alleen deze ene file via parse_bpmn
+    import bpmn_parser as _bp
+    parsed = _bp.parse_bpmn(v1)
+    # Minimal model-stub zodat cross-BPMN findings geen zin hebben (enkel 1 file)
+    from merger import merge
+    model = merge([parsed])
+    findings = review(model, user_defs=user_defs)
+    return findings
+
+
 @app.route("/session/<sid>/improved/<path:filename>")
 def session_improved_bpmn(sid: str, filename: str):
-    """Preview-XML met alle safe auto-fixes toegepast."""
+    """Preview-XML: v1 + alle safe auto-fixes toegepast."""
     if not _is_valid_sid(sid):
         abort(404)
     sdir = SESSIONS_DIR / sid
     safe = secure_filename(filename)
-    data_file = sdir / "data" / safe
-    if not data_file.exists():
+    source = _resolve_source_file(sdir, safe)
+    if source is None:
         abort(404)
-
-    summary_path = sdir / "output" / "summary.json"
-    if not summary_path.exists():
-        abort(404)
-    with summary_path.open("r", encoding="utf-8") as fh:
-        summary = json.load(fh)
-    findings = summary.get("findings", [])
 
     user_defs = bpmn_defs.load(ROOT)
+    findings = _findings_for_original(sdir, safe, user_defs)
     try:
         xml_bytes, _changes = bpmn_apply.build_improved_preview(
-            data_file, findings, user_defs
+            source, findings, user_defs
         )
     except Exception as e:
         return f"Preview-fout: {e}", 500
@@ -720,28 +750,48 @@ def session_improved_bpmn(sid: str, filename: str):
 
 @app.route("/session/<sid>/improved-summary/<path:filename>")
 def session_improved_summary(sid: str, filename: str):
-    """Lijst van wijzigingen die in de preview zijn doorgevoerd."""
+    """Lijst van wijzigingen die in de v1-based preview zijn doorgevoerd."""
     if not _is_valid_sid(sid):
         abort(404)
     sdir = SESSIONS_DIR / sid
     safe = secure_filename(filename)
-    data_file = sdir / "data" / safe
-    if not data_file.exists():
+    source = _resolve_source_file(sdir, safe)
+    if source is None:
         abort(404)
-    summary_path = sdir / "output" / "summary.json"
-    if not summary_path.exists():
-        abort(404)
-    with summary_path.open("r", encoding="utf-8") as fh:
-        summary = json.load(fh)
-    findings = summary.get("findings", [])
     user_defs = bpmn_defs.load(ROOT)
+    findings = _findings_for_original(sdir, safe, user_defs)
     try:
         _xml, changes = bpmn_apply.build_improved_preview(
-            data_file, findings, user_defs
+            source, findings, user_defs
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"changes": changes})
+
+
+@app.route("/session/<sid>/bpmn-original/<path:filename>")
+def session_bpmn_original(sid: str, filename: str):
+    """Serveer altijd de v1-versie (de originele upload), onafhankelijk van
+    hoeveel fixes er inmiddels zijn toegepast."""
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    safe = secure_filename(filename)
+    # Zoek v1.<ext> in versions/<base>/
+    base = Path(safe).stem
+    ext = Path(safe).suffix
+    v1 = sdir / "versions" / base / f"v1{ext}"
+    if v1.exists():
+        return send_from_directory(
+            str(v1.parent), v1.name, mimetype="application/xml"
+        )
+    # Fallback: actieve file (als versies nog niet zijn aangemaakt)
+    data_file = sdir / "data" / safe
+    if data_file.exists():
+        return send_from_directory(
+            str(data_file.parent), safe, mimetype="application/xml"
+        )
+    abort(404)
 
 
 @app.route("/session/<sid>/bpmn/<path:filename>")

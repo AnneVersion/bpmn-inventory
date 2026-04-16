@@ -908,6 +908,51 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     letter-spacing: .04em;
 }
 
+/* Pijnpunten: de kop-samenvatting direct boven het v1-diagram */
+.painpoints {
+    background: #fff7e6;
+    border: 1px solid #fbcd7c;
+    border-left: 4px solid var(--warn);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 4px 0 12px;
+    font-size: .9rem;
+    line-height: 1.6;
+    color: var(--text);
+}
+.painpoints .pp-title {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    font-size: .78rem;
+    color: var(--warn);
+    margin-right: 6px;
+}
+.painpoints .pp-stat {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 4px;
+    background: #fff;
+    margin-right: 4px;
+}
+.painpoints .pp-stat strong { font-size: 1.05em; }
+.painpoints .pp-stat small  { color: var(--muted); }
+.painpoints .pp-stat code   { background: #eef2f8; padding: 0 4px; font-size: .8em; }
+.painpoints .pp-error   { border-left: 3px solid var(--danger); }
+.painpoints .pp-error strong   { color: var(--danger); }
+.painpoints .pp-warning { border-left: 3px solid var(--warn); }
+.painpoints .pp-warning strong { color: var(--warn); }
+.painpoints .pp-info    { border-left: 3px solid var(--primary); }
+.painpoints .pp-info strong    { color: var(--primary); }
+
+/* Wanneer er geen pijnpunten zijn */
+.painpoints.pp-clean {
+    background: #ecfdf5;
+    border-color: #6ee7b7;
+    border-left-color: #10b981;
+}
+.painpoints .pp-ok { color: #065f46; font-size: 1rem; }
+
 .improved-changes {
     background: #eef2fb;
     border: 1px solid #c7d2fe;
