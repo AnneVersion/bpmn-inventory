@@ -859,6 +859,38 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     padding: 0 8px;
 }
 
+/* ---------- Improved preview (BPMN volgens de regels) ---------- */
+.improved-section {
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 3px double var(--primary);
+}
+.improved-section h3 {
+    color: var(--primary);
+    margin: 0 0 6px;
+}
+.improved-section h3 small {
+    color: var(--muted);
+    font-weight: normal;
+    font-size: .82rem;
+}
+.improved-changes {
+    background: #eef2fb;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 10px 0 14px;
+    font-size: .88rem;
+}
+.improved-changes ul { margin: 6px 0 0; padding-left: 22px; }
+.improved-changes li { margin: 3px 0; }
+.improved-changes code {
+    background: var(--primary);
+    color: #fff;
+    font-size: .72rem;
+    padding: 1px 5px;
+}
+
 /* ---------- Mermaid ERD ---------- */
 .mermaid-wrap {
     border: 1px solid var(--border);

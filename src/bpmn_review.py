@@ -102,16 +102,25 @@ VERB_ACTIONS: dict[str, str] = {
 # Backwards-compat: platte lijst verbs voor keyword-matching
 DATA_VERBS = list(VERB_ACTIONS.keys())
 
-# Zelfstandige-naamwoord-achtige hints die op een dataobject wijzen
+# Zelfstandige-naamwoord-achtige hints die op een dataobject wijzen.
+# Hier staan zowel samengestelde ('organisatiegegeven') als de los-staande
+# entiteiten ('organisatie') zodat R101 in beide vormen treft.
 DATA_NOUNS = [
+    # Generieke data-substantieven
     "gegeven", "gegevens", "dossier", "formulier", "aanvraag",
     "aanvragen", "contract", "factuur", "machtiging", "bestand",
     "document", "melding", "brief", "notitie", "record",
-    "lidmaatschap", "inschrijv", "opzegging", "wijziging",
     "verzoek", "mandaat", "incasso", "betaling",
-    "profiel", "account", "lid",
+    "profiel", "account",
+    # Samengestelde concepten
     "organisatiegegeven", "persoonsgegeven", "bedrijfsgegeven",
+    "lidmaatschap", "inschrijv", "opzegging", "wijziging",
+    "jaaropgave", "tariefgroep", "werverspremie",
+    # Losstaande entiteiten (komen vaak los in taaknamen voor)
+    "organisatie", "bedrijf", "werkgever", "werknemer",
+    "persoon", "klant", "lid", "leden",
     "adres", "naam", "iban", "bsn",
+    "cao",
 ]
 
 # Systeem / bron-namen die vaak als (ontbrekende) dataStore voorkomen

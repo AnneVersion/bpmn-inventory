@@ -81,6 +81,54 @@ def _find_containing_process(root: ET.Element,
 # Apply fix: voeg dataObject + association toe aan een task
 # ---------------------------------------------------------------------------
 
+def _add_dataobject_in_tree(
+    root: ET.Element,
+    task_id: str,
+    object_name: str,
+    action_type: str,
+    attributes: list[dict] | None = None,
+) -> bool:
+    """In-place: voeg dataObject + reference + association toe. Returns True als
+    de wijziging is toegepast, False als task of process niet gevonden is."""
+    task = _find_element_by_id(root, task_id)
+    if task is None:
+        return False
+    proc = _find_containing_process(root, task)
+    if proc is None:
+        return False
+
+    do_id = _safe_id(object_name, "DO")
+    dor_id = _safe_id(object_name, "DOR")
+    data_obj = ET.SubElement(proc, _qname("dataObject"),
+                             {"id": do_id, "name": object_name})
+    if attributes:
+        doc = ET.SubElement(data_obj, _qname("documentation"))
+        doc.text = ("ATTRIBUTES_JSON="
+                    + json.dumps({"attributes": attributes}, ensure_ascii=False))
+    ET.SubElement(proc, _qname("dataObjectReference"),
+                  {"id": dor_id, "name": object_name, "dataObjectRef": do_id})
+
+    if action_type in ("READ", "UPDATE"):
+        ia = ET.SubElement(task, _qname("dataInputAssociation"),
+                           {"id": _safe_id(object_name, "IA")})
+        src = ET.SubElement(ia, _qname("sourceRef"))
+        src.text = dor_id
+    if action_type in ("WRITE", "UPDATE"):
+        oa = ET.SubElement(task, _qname("dataOutputAssociation"),
+                           {"id": _safe_id(object_name, "OA")})
+        tgt = ET.SubElement(oa, _qname("targetRef"))
+        tgt.text = dor_id
+    if action_type not in ("READ", "WRITE", "UPDATE"):
+        # Onbekend -> beide kanten
+        ia = ET.SubElement(task, _qname("dataInputAssociation"),
+                           {"id": _safe_id(object_name, "IA")})
+        ET.SubElement(ia, _qname("sourceRef")).text = dor_id
+        oa = ET.SubElement(task, _qname("dataOutputAssociation"),
+                           {"id": _safe_id(object_name, "OA")})
+        ET.SubElement(oa, _qname("targetRef")).text = dor_id
+    return True
+
+
 def apply_add_dataobject(
     bpmn_path: Path,
     task_id: str,
@@ -88,72 +136,196 @@ def apply_add_dataobject(
     action_type: Literal["READ", "WRITE", "UPDATE"],
     attributes: list[dict] | None = None,
 ) -> Path:
-    """
-    Voeg een <bpmn:dataObject> + <bpmn:dataObjectReference> toe aan het
-    proces dat de task bevat, en koppel aan de task met een
-    data(Input|Output)Association.
-
-    Voor UPDATE worden zowel Input- als OutputAssociation gemaakt.
-
-    `attributes` worden als <documentation> JSON geannoteerd op het
-    dataObject (BPMN 2.0 heeft geen formeel attribute-concept).
-
-    Returns: het pad waar de gepatchte XML is weggeschreven. Overschrijft
-    `bpmn_path`. Aanroeper is verantwoordelijk voor versiebeheer.
-    """
+    """File-I/O wrapper rond `_add_dataobject_in_tree`."""
     tree = ET.parse(bpmn_path)
-    root = tree.getroot()
-
-    task = _find_element_by_id(root, task_id)
-    if task is None:
-        raise ValueError(f"Task {task_id!r} niet gevonden in {bpmn_path}")
-
-    proc = _find_containing_process(root, task)
-    if proc is None:
-        raise ValueError(f"Process rond task {task_id!r} niet gevonden")
-
-    # 1. Maak <bpmn:dataObject>
-    do_id = _safe_id(object_name, "DO")
-    dor_id = _safe_id(object_name, "DOR")
-    data_obj = ET.SubElement(proc, _qname("dataObject"),
-                             {"id": do_id, "name": object_name})
-
-    # Attribute-metadata als <bpmn:documentation> met JSON-payload
-    if attributes:
-        doc = ET.SubElement(data_obj, _qname("documentation"))
-        doc.text = ("ATTRIBUTES_JSON="
-                    + json.dumps({"attributes": attributes}, ensure_ascii=False))
-
-    # 2. Maak <bpmn:dataObjectReference>
-    data_ref = ET.SubElement(
-        proc, _qname("dataObjectReference"),
-        {"id": dor_id, "name": object_name, "dataObjectRef": do_id},
-    )
-
-    # 3. Association(s) op de task
-    def _add_input():
-        ia_id = _safe_id(object_name, "IA")
-        ia = ET.SubElement(task, _qname("dataInputAssociation"), {"id": ia_id})
-        src = ET.SubElement(ia, _qname("sourceRef"))
-        src.text = dor_id
-
-    def _add_output():
-        oa_id = _safe_id(object_name, "OA")
-        oa = ET.SubElement(task, _qname("dataOutputAssociation"), {"id": oa_id})
-        tgt = ET.SubElement(oa, _qname("targetRef"))
-        tgt.text = dor_id
-
-    if action_type == "READ":
-        _add_input()
-    elif action_type == "WRITE":
-        _add_output()
-    else:  # UPDATE of onbekend -> beide
-        _add_input()
-        _add_output()
-
-    # XML-declaration behouden + UTF-8
+    if not _add_dataobject_in_tree(tree.getroot(), task_id, object_name,
+                                   action_type, attributes):
+        raise ValueError(
+            f"Task {task_id!r} of bijbehorend <bpmn:process> niet gevonden in "
+            f"{bpmn_path}"
+        )
     tree.write(bpmn_path, xml_declaration=True, encoding="UTF-8")
     return bpmn_path
+
+
+def _remove_gateway_in_tree(root: ET.Element, gateway_id: str) -> bool:
+    """In-place: verwijder een gateway met exact 1 uitgaande flow.
+
+    Gedrag: incoming-flow.target wordt herrouteerd naar de target van de
+    uitgaande flow. De uitgaande flow en de gateway zelf worden verwijderd.
+    Returns True bij succes; False als gateway of flows niet passen.
+    """
+    gw = _find_element_by_id(root, gateway_id)
+    if gw is None:
+        return False
+    proc = _find_containing_process_or_root(root, gw)
+    if proc is None:
+        return False
+
+    # Zoek alle sequenceFlows met deze gateway als source of target
+    incoming = []
+    outgoing = []
+    for sf in proc.iter(_qname("sequenceFlow")):
+        if sf.get("sourceRef") == gateway_id:
+            outgoing.append(sf)
+        if sf.get("targetRef") == gateway_id:
+            incoming.append(sf)
+
+    if len(outgoing) != 1:
+        return False  # veilig: alleen removen als degenerate
+    out_flow = outgoing[0]
+    out_target = out_flow.get("targetRef", "")
+    if not out_target:
+        return False
+
+    # Route alle incoming flows naar de outgoing target
+    for inc in incoming:
+        inc.set("targetRef", out_target)
+
+    # Verwijder de outgoing flow en de gateway
+    proc.remove(out_flow)
+    proc.remove(gw)
+
+    # Poging om DI shape voor de gateway te verwijderen
+    for plane in root.iter("{http://www.omg.org/spec/BPMN/20100524/DI}BPMNPlane"):
+        to_remove = []
+        for shape in plane:
+            if shape.get("bpmnElement") in (gateway_id, out_flow.get("id")):
+                to_remove.append(shape)
+        for s in to_remove:
+            plane.remove(s)
+    return True
+
+
+def _add_datastore_in_tree(
+    root: ET.Element,
+    task_id: str,
+    system_name: str,
+    action_type: str,
+) -> bool:
+    """In-place: voeg <bpmn:dataStoreReference> toe + koppel aan task."""
+    task = _find_element_by_id(root, task_id)
+    if task is None:
+        return False
+    proc = _find_containing_process(root, task)
+    if proc is None:
+        return False
+
+    ds_id = _safe_id(system_name, "DS")
+    dsr_id = _safe_id(system_name, "DSR")
+    # dataStore staat op root (volgens spec), dataStoreReference in process
+    defs = root if root.tag.endswith("}definitions") else root
+    ET.SubElement(defs, _qname("dataStore"),
+                  {"id": ds_id, "name": system_name})
+    ET.SubElement(proc, _qname("dataStoreReference"),
+                  {"id": dsr_id, "name": system_name, "dataStoreRef": ds_id})
+
+    if action_type in ("READ", "UPDATE", ""):
+        ia = ET.SubElement(task, _qname("dataInputAssociation"),
+                           {"id": _safe_id(system_name, "IA")})
+        ET.SubElement(ia, _qname("sourceRef")).text = dsr_id
+    if action_type in ("WRITE", "UPDATE"):
+        oa = ET.SubElement(task, _qname("dataOutputAssociation"),
+                           {"id": _safe_id(system_name, "OA")})
+        ET.SubElement(oa, _qname("targetRef")).text = dsr_id
+    return True
+
+
+def _find_containing_process_or_root(
+    root: ET.Element, el: ET.Element
+) -> ET.Element | None:
+    """Zoek <bpmn:process> dat `el` bevat; val terug op root als niets past."""
+    p = _find_containing_process(root, el)
+    return p if p is not None else root
+
+
+def build_improved_preview(
+    bpmn_path: Path,
+    findings: list[dict],
+    user_defs: dict | None = None,
+) -> tuple[bytes, list[dict]]:
+    """Genereer een 'BPMN volgens de regels' preview door alle *veilige*
+    auto-fixes toe te passen op een kopie van de XML. Retourneert
+    (xml_bytes, changes_list).
+
+    Fixes die automatisch worden toegepast:
+    - R007: overbodige gateways verwijderen
+    - R101: ontbrekende <bpmn:dataObject> toevoegen + koppelen
+    - R102: ontbrekende <bpmn:dataStoreReference> toevoegen + koppelen
+
+    Fixes die NIET automatisch worden toegepast (vereisen menselijke keuze
+    of DI-manipulatie):
+    - R001, R002, R003, R004, R005, R006, R008, R009, R010, R103
+    """
+    import copy
+    import io
+
+    tree = ET.parse(bpmn_path)
+    root = tree.getroot()
+    changes: list[dict] = []
+
+    # R007 eerst (simpelste structuurwijziging)
+    for f in findings:
+        if f.get("rule") != "R007":
+            continue
+        if f.get("source_file") != bpmn_path.name:
+            continue
+        gw_id = f.get("element_id", "")
+        if not gw_id:
+            continue
+        if _remove_gateway_in_tree(root, gw_id):
+            changes.append({
+                "rule": "R007",
+                "element": f.get("element_name") or gw_id,
+                "description": (f"Overbodige gateway '{f.get('element_name') or gw_id}' "
+                                "verwijderd — inkomende flow direct doorgezet."),
+            })
+
+    # R101 dataObjects toevoegen
+    for f in findings:
+        if f.get("rule") != "R101":
+            continue
+        if f.get("source_file") != bpmn_path.name:
+            continue
+        if not f.get("fixable") or not f.get("suggested_object"):
+            continue
+        task_id = f.get("element_id", "")
+        obj = f.get("suggested_object", "")
+        action = (f.get("action_type") or "WRITE").upper()
+        attrs = f.get("suggested_attributes", []) or []
+        if _add_dataobject_in_tree(root, task_id, obj, action, attrs):
+            changes.append({
+                "rule": "R101",
+                "element": f.get("element_name") or task_id,
+                "description": (f"<bpmn:dataObject name=\"{obj}\"> toegevoegd "
+                                f"+ {action}-association op taak "
+                                f"'{f.get('element_name')}'."),
+            })
+
+    # R102 dataStores toevoegen
+    for f in findings:
+        if f.get("rule") != "R102":
+            continue
+        if f.get("source_file") != bpmn_path.name:
+            continue
+        params = f.get("fix_params", {}) or {}
+        task_id = params.get("task_id") or f.get("element_id", "")
+        system = params.get("system_name", "")
+        action = (params.get("action_type") or "READ").upper()
+        if not system:
+            continue
+        if _add_datastore_in_tree(root, task_id, system, action):
+            changes.append({
+                "rule": "R102",
+                "element": f.get("element_name") or task_id,
+                "description": (f"<bpmn:dataStoreReference name=\"{system}\"> "
+                                f"toegevoegd + {action}-association op taak "
+                                f"'{f.get('element_name')}'."),
+            })
+
+    buf = io.BytesIO()
+    tree.write(buf, xml_declaration=True, encoding="UTF-8")
+    return buf.getvalue(), changes
 
 
 # ---------------------------------------------------------------------------

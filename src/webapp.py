@@ -642,6 +642,62 @@ def definitions_delete_object(name: str):
     return jsonify({"ok": True, "data": bpmn_defs.load(ROOT)})
 
 
+@app.route("/session/<sid>/improved/<path:filename>")
+def session_improved_bpmn(sid: str, filename: str):
+    """Preview-XML met alle safe auto-fixes toegepast."""
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    safe = secure_filename(filename)
+    data_file = sdir / "data" / safe
+    if not data_file.exists():
+        abort(404)
+
+    summary_path = sdir / "output" / "summary.json"
+    if not summary_path.exists():
+        abort(404)
+    with summary_path.open("r", encoding="utf-8") as fh:
+        summary = json.load(fh)
+    findings = summary.get("findings", [])
+
+    user_defs = bpmn_defs.load(ROOT)
+    try:
+        xml_bytes, _changes = bpmn_apply.build_improved_preview(
+            data_file, findings, user_defs
+        )
+    except Exception as e:
+        return f"Preview-fout: {e}", 500
+
+    from flask import Response
+    return Response(xml_bytes, mimetype="application/xml")
+
+
+@app.route("/session/<sid>/improved-summary/<path:filename>")
+def session_improved_summary(sid: str, filename: str):
+    """Lijst van wijzigingen die in de preview zijn doorgevoerd."""
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    safe = secure_filename(filename)
+    data_file = sdir / "data" / safe
+    if not data_file.exists():
+        abort(404)
+    summary_path = sdir / "output" / "summary.json"
+    if not summary_path.exists():
+        abort(404)
+    with summary_path.open("r", encoding="utf-8") as fh:
+        summary = json.load(fh)
+    findings = summary.get("findings", [])
+    user_defs = bpmn_defs.load(ROOT)
+    try:
+        _xml, changes = bpmn_apply.build_improved_preview(
+            data_file, findings, user_defs
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"changes": changes})
+
+
 @app.route("/session/<sid>/bpmn/<path:filename>")
 def session_bpmn_raw(sid: str, filename: str):
     """Serveer een geuploade .bpmn file als XML voor bpmn-js."""

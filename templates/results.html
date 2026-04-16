@@ -81,6 +81,23 @@
 
             <!-- Findings voor het huidige BPMN-bestand (per-rij gerendert) -->
             <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
+
+            <!-- Preview: BPMN volgens de regels (alle safe auto-fixes toegepast) -->
+            <section class="improved-section">
+                <h3>Voorstel: BPMN volgens de regels
+                    <small>(alle veilige auto-fixes toegepast op een kopie)</small>
+                </h3>
+                <p class="viewer-hint">
+                    Dit is een preview — er is <strong>niets</strong> gewijzigd aan
+                    je upload. Met 'Toepassen' op een individuele finding zet je
+                    de wijziging door in je sessie-versie.
+                </p>
+                <div class="improved-changes" id="improved-changes">
+                    <em>Wijzigingen worden bepaald zodra het diagram geladen is...</em>
+                </div>
+                <div id="improved-viewer" class="bpmn-viewer"></div>
+                <p class="viewer-hint" id="improved-status">Preview laden...</p>
+            </section>
         {% else %}
             <p>Geen BPMN-bestanden om te tonen.</p>
         {% endif %}
@@ -588,6 +605,13 @@
     var viewer    = null;
     var overlayIds = [];
 
+    function escapeHtml(s) {
+        return String(s || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+
     function ensureViewer() {
         if (viewer || !viewerEl) return;
         if (typeof BpmnJS === 'undefined') {
@@ -639,12 +663,6 @@
             }
         });
 
-        function escapeHtml(s) {
-            return String(s || '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-        }
         function sevIcon(sev) {
             return sev === 'error' ? '!' : (sev === 'warning' ? '!' : 'i');
         }
@@ -971,6 +989,58 @@
             })
             .catch(function (err) {
                 status.textContent = 'Kan bestand niet ophalen: ' + err;
+            });
+        loadImproved(name);
+    }
+
+    // --- Improved preview viewer ---
+    var improvedViewer = null;
+    function ensureImprovedViewer() {
+        if (improvedViewer) return;
+        var el = document.getElementById('improved-viewer');
+        if (!el || typeof BpmnJS === 'undefined') return;
+        improvedViewer = new BpmnJS({ container: el });
+    }
+    function loadImproved(name) {
+        ensureImprovedViewer();
+        var status2 = document.getElementById('improved-status');
+        var changesEl = document.getElementById('improved-changes');
+        if (!improvedViewer) return;
+        status2.textContent = 'Preview laden: ' + name;
+
+        fetch(urlBase + '/improved/' + encodeURIComponent(name))
+            .then(function (r) { return r.text(); })
+            .then(function (xml) {
+                improvedViewer.importXML(xml).then(function () {
+                    improvedViewer.get('canvas').zoom('fit-viewport');
+                    status2.textContent = 'Preview geladen.';
+                }).catch(function (err) {
+                    status2.textContent = 'Preview-fout: ' + (err.message || err);
+                });
+            })
+            .catch(function (err) {
+                status2.textContent = 'Kan preview niet ophalen: ' + err;
+            });
+
+        fetch(urlBase + '/improved-summary/' + encodeURIComponent(name))
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+                if (res.error) {
+                    changesEl.innerHTML = '<em>Fout: ' + escapeHtml(res.error) + '</em>';
+                    return;
+                }
+                var cs = res.changes || [];
+                if (!cs.length) {
+                    changesEl.innerHTML = '<em>Geen safe auto-fixes van toepassing voor dit bestand.</em>';
+                    return;
+                }
+                changesEl.innerHTML =
+                    '<strong>' + cs.length + ' wijziging(en) in preview:</strong>' +
+                    '<ul>' + cs.map(function (c) {
+                        return '<li><code>' + escapeHtml(c.rule) + '</code> ' +
+                               '<strong>' + escapeHtml(c.element) + '</strong>: ' +
+                               escapeHtml(c.description) + '</li>';
+                    }).join('') + '</ul>';
             });
     }
 
