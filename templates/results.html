@@ -107,6 +107,20 @@
                     </div>
                     <div id="improved-viewer" class="bpmn-viewer"></div>
                     <p class="viewer-hint" id="improved-status">Preview laden...</p>
+
+                    {% if summary.mermaid_erd %}
+                    <h4 class="findings-heading" style="margin-top:20px;">
+                        Afgeleid datamodel (ERD)
+                    </h4>
+                    <p class="viewer-hint">
+                        Entities + relaties afgeleid uit alle BPMN's in deze sessie.
+                        Klik op de tab <em>ERD</em> voor de volledige entity-tabel met
+                        attributen en lifecycle.
+                    </p>
+                    <div class="mermaid-wrap">
+                        <pre class="mermaid" id="mermaid-erd-inline">{{ summary.mermaid_erd }}</pre>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         {% else %}
@@ -591,8 +605,9 @@
         });
     }
 
-    // --- Mermaid (lazy render bij tab-open) ---
+    // --- Mermaid (lazy render bij tab-open + inline onder voorstel) ---
     var mermaidRendered = false;
+    var mermaidInlineRendered = false;
     function renderMermaid() {
         if (mermaidRendered) return;
         var el = document.getElementById('mermaid-erd');
@@ -601,6 +616,17 @@
             .then(function () { mermaidRendered = true; })
             .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
     }
+    function renderMermaidInline() {
+        if (mermaidInlineRendered) return;
+        var el = document.getElementById('mermaid-erd-inline');
+        if (!el || !window.__mermaid) return;
+        window.__mermaid.run({ nodes: [el] })
+            .then(function () { mermaidInlineRendered = true; })
+            .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
+    }
+    // Rende inline ERD na korte delay (mermaid CDN moet geladen zijn)
+    setTimeout(renderMermaidInline, 800);
+    setTimeout(renderMermaidInline, 2500);
 
     // --- BPMN viewer ---
     var sid       = {{ summary.sid|tojson }};
