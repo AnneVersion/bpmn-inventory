@@ -76,28 +76,31 @@
                 <span class="lg-spacer"></span>
                 <span class="lg-count" id="bpmn-finding-count"></span>
             </div>
-            <div id="bpmn-viewer" class="bpmn-viewer"></div>
-            <p class="viewer-hint" id="bpmn-status">Diagram laden...</p>
-
-            <!-- Findings voor het huidige BPMN-bestand (per-rij gerendert) -->
-            <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
-
-            <!-- Preview: BPMN volgens de regels (alle safe auto-fixes toegepast) -->
-            <section class="improved-section">
-                <h3>Voorstel: BPMN volgens de regels
-                    <small>(alle veilige auto-fixes toegepast op een kopie)</small>
-                </h3>
-                <p class="viewer-hint">
-                    Dit is een preview — er is <strong>niets</strong> gewijzigd aan
-                    je upload. Met 'Toepassen' op een individuele finding zet je
-                    de wijziging door in je sessie-versie.
-                </p>
-                <div class="improved-changes" id="improved-changes">
-                    <em>Wijzigingen worden bepaald zodra het diagram geladen is...</em>
+            <div class="diagram-pair">
+                <div class="diagram-block">
+                    <div class="diagram-label diagram-label-current">
+                        Huidige versie <span class="label-tag">ORIGINEEL</span>
+                    </div>
+                    <div id="bpmn-viewer" class="bpmn-viewer"></div>
+                    <p class="viewer-hint" id="bpmn-status">Diagram laden...</p>
                 </div>
-                <div id="improved-viewer" class="bpmn-viewer"></div>
-                <p class="viewer-hint" id="improved-status">Preview laden...</p>
-            </section>
+
+                <div class="diagram-block diagram-block-improved">
+                    <div class="diagram-label diagram-label-improved">
+                        Voorstel volgens de regels
+                        <span class="label-tag">PREVIEW</span>
+                    </div>
+                    <div class="improved-changes" id="improved-changes">
+                        <em>Wijzigingen worden bepaald zodra het diagram geladen is...</em>
+                    </div>
+                    <div id="improved-viewer" class="bpmn-viewer"></div>
+                    <p class="viewer-hint" id="improved-status">Preview laden...</p>
+                </div>
+            </div>
+
+            <!-- Findings voor het huidige BPMN-bestand -->
+            <h4 class="findings-heading">Findings voor dit bestand</h4>
+            <div class="bpmn-finding-list" id="bpmn-finding-list"></div>
         {% else %}
             <p>Geen BPMN-bestanden om te tonen.</p>
         {% endif %}

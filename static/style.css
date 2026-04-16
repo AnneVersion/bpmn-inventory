@@ -859,27 +859,61 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     padding: 0 8px;
 }
 
-/* ---------- Improved preview (BPMN volgens de regels) ---------- */
-.improved-section {
-    margin-top: 28px;
-    padding-top: 24px;
-    border-top: 3px double var(--primary);
+/* ---------- Huidige vs voorstel (stacked onder elkaar) ---------- */
+.diagram-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
 }
-.improved-section h3 {
-    color: var(--primary);
-    margin: 0 0 6px;
+.diagram-block {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px 14px;
+    background: #fff;
 }
-.improved-section h3 small {
+.diagram-block-improved {
+    border-color: #c7d2fe;
+    background: #fafbff;
+}
+.diagram-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: .95rem;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+.diagram-label-current   { color: var(--text); }
+.diagram-label-improved  { color: var(--primary); }
+.label-tag {
+    background: #e5e7eb;
+    color: #374151;
+    padding: 1px 8px;
+    border-radius: 3px;
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+}
+.diagram-label-improved .label-tag {
+    background: var(--primary); color: #fff;
+}
+
+.findings-heading {
+    margin-top: 22px;
+    margin-bottom: 8px;
+    font-size: .95rem;
     color: var(--muted);
-    font-weight: normal;
-    font-size: .82rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
 }
+
 .improved-changes {
     background: #eef2fb;
     border: 1px solid #c7d2fe;
     border-radius: 6px;
     padding: 10px 14px;
-    margin: 10px 0 14px;
+    margin: 4px 0 12px;
     font-size: .88rem;
 }
 .improved-changes ul { margin: 6px 0 0; padding-left: 22px; }
