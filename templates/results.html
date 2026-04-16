@@ -90,13 +90,87 @@
     <section class="tab-panel" data-panel="erd">
         {% if summary.mermaid_erd %}
             <p class="lead">
-                Afgeleide ERD uit <strong>{{ summary.anchors|length }}</strong>
-                ankerobjecten en {{ summary.totals.data_objects }} data-objecten.
-                Relaties waar dezelfde taak twee objecten gebruikt (input/output).
+                Bedrijfsdatamodel afgeleid uit <strong>{{ summary.erd.entities|length }}</strong>
+                entities en <strong>{{ summary.erd.relationships|length }}</strong> relaties.
+                Cardinaliteit (Crow's Foot) inferred uit task-I/O; attributen uit
+                user-dictionary + ingebouwde vocabulary.
             </p>
             <div class="mermaid-wrap">
                 <pre class="mermaid" id="mermaid-erd">{{ summary.mermaid_erd }}</pre>
             </div>
+
+            <h3>Entities ({{ summary.erd.entities|length }})</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Entity</th><th>Type</th>
+                        <th>Aliases</th>
+                        <th>Lifecycle (proc → actie)</th>
+                        <th>Attributen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for e in summary.erd.entities %}
+                    <tr>
+                        <td>
+                            <strong>{{ e.name }}</strong>
+                            {% if e.user_defined %}<br><small style="color:#059669;">✓ user-defined</small>{% endif %}
+                        </td>
+                        <td>
+                            {% if e.is_master %}<span class="badge cls-vertrouwelijk">MASTER</span>
+                            {% elif e.is_weak %}<span class="badge cls-intern">ZWAK van {{ e.parent }}</span>
+                            {% elif e.is_anchor %}<span class="badge cls-bijzonder-persoonsgegeven">ANKER</span>
+                            {% else %}<span class="badge">Normaal</span>
+                            {% endif %}
+                        </td>
+                        <td><small>{% for a in e.aliases %}<code>{{ a }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</small></td>
+                        <td><small>
+                            {% for c in e.lifecycle.creators %}<span class="lc-badge lc-create">CREATE: {{ c }}</span>{% endfor %}
+                            {% for c in e.lifecycle.updaters %}<span class="lc-badge lc-update">UPDATE: {{ c }}</span>{% endfor %}
+                            {% for c in e.lifecycle.readers %}<span class="lc-badge lc-read">READ: {{ c }}</span>{% endfor %}
+                        </small></td>
+                        <td>
+                            <details>
+                                <summary>{{ e.attributes|length }} attributen</summary>
+                                <table class="attr-table">
+                                    <thead><tr><th>Naam</th><th>Type</th><th>PK/FK</th><th>Req/Uniek</th><th>Herkomst</th></tr></thead>
+                                    <tbody>
+                                    {% for a in e.attributes %}
+                                        <tr>
+                                            <td><code>{{ a.name }}</code></td>
+                                            <td><small>{{ a.type }}</small></td>
+                                            <td>{% if a.pk %}<span class="tag-pk">PK</span>{% elif a.fk %}<span class="tag-fk">FK→{{ a.fk_to }}</span>{% endif %}</td>
+                                            <td><small>{% if a.required %}req {% endif %}{% if a.unique %}uniek{% endif %}</small></td>
+                                            <td><small>{{ a.derived_from }}</small></td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </details>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+
+            {% if summary.erd.relationships %}
+            <h3>Relaties ({{ summary.erd.relationships|length }})</h3>
+            <table class="data-table">
+                <thead><tr><th>Links</th><th>Card.</th><th>Rechts</th><th>Card.</th><th>Label</th><th>Evidence</th></tr></thead>
+                <tbody>
+                {% for r in summary.erd.relationships %}
+                    <tr>
+                        <td>{{ r.left }}</td>
+                        <td><code>{{ r.left_card }}</code></td>
+                        <td>{{ r.right }}</td>
+                        <td><code>{{ r.right_card }}</code></td>
+                        <td>{{ r.label }}{% if r.is_identifying %} <small>(identifying)</small>{% endif %}</td>
+                        <td><small>{{ r.evidence|join(', ') }}</small></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
         {% else %}
             <div class="empty">
                 <h3>Geen ERD af te leiden</h3>
@@ -702,17 +776,98 @@
                     canvas.scrollToElement(el, { top: 200, bottom: 200, left: 200, right: 200 });
                 });
             });
-            // Toepassen-knoppen
+            // Toepassen-knoppen — verschillende dialoogs per regel
             listEl.querySelectorAll('.btn-apply').forEach(function (btn) {
                 btn.addEventListener('click', function (ev) {
                     ev.stopPropagation();
                     var idx = parseInt(btn.getAttribute('data-fidx'), 10);
                     var f = relevant[idx];
                     if (!f) return;
-                    openApplyDialog(f, fileName);
+                    if (f.rule === 'R008') {
+                        openR008Dialog(f, fileName);
+                    } else {
+                        openApplyDialog(f, fileName);
+                    }
                 });
             });
         }
+    }
+
+    // --- R008: default-flow dialog ---
+    function openR008Dialog(f, fileName) {
+        var dlg = document.getElementById('apply-dialog');
+        if (!dlg) {
+            dlg = document.createElement('div');
+            dlg.id = 'apply-dialog';
+            dlg.className = 'modal-backdrop';
+            document.body.appendChild(dlg);
+        }
+        var flows = f.outgoing_flows || [];
+        var radios = flows.map(function (fl, i) {
+            var label = (fl.name || '(geen naam)') + ' → ' + escapeHtml(fl.target_name || fl.target_id);
+            return '<label class="flow-option">' +
+                     '<input type="radio" name="default-flow" value="' + escapeAttr(fl.id) + '"' +
+                     (i === 0 ? ' checked' : '') + '>' +
+                     '<span><strong>' + escapeHtml(fl.name || '(zonder naam)') + '</strong> &rarr; ' +
+                       escapeHtml(fl.target_name || fl.target_id) + '</span>' +
+                   '</label>';
+        }).join('');
+        dlg.innerHTML =
+          '<div class="modal">' +
+            '<h3>Default-flow kiezen voor gateway</h3>' +
+            '<p>Gateway: <strong>' + escapeHtml(f.element_name) + '</strong> ' +
+              '(<code>' + escapeHtml(f.element_id) + '</code>) in <code>' + escapeHtml(fileName) + '</code></p>' +
+            '<p>Welke uitgaande flow wordt de default-flow? De <em>default</em> wordt genomen als geen enkele conditie matcht.</p>' +
+            '<div class="flow-options">' + radios +
+              '<label class="flow-option">' +
+                '<input type="radio" name="default-flow" value="">' +
+                '<span><em>Geen default</em> (alle flows krijgen een conditie)</span>' +
+              '</label>' +
+            '</div>' +
+            '<label class="row" style="margin-top:14px;"><input type="checkbox" id="guess-conds" checked> ' +
+              'Voeg automatisch conditie-stubs toe aan de niet-default flows (op basis van flow-naam)</label>' +
+            '<p class="modal-warn">Origineel blijft als v1. De wijziging wordt opgeslagen als nieuwe versie.</p>' +
+            '<div class="modal-actions">' +
+              '<button type="button" class="btn-secondary" id="apply-cancel">Annuleren</button>' +
+              '<button type="button" class="btn-primary" id="apply-confirm">Bevestig &amp; pas toe</button>' +
+            '</div>' +
+          '</div>';
+        dlg.style.display = 'flex';
+
+        document.getElementById('apply-cancel').onclick = function () { dlg.style.display = 'none'; };
+        document.getElementById('apply-confirm').onclick = function () {
+            var btn = document.getElementById('apply-confirm');
+            var chosen = dlg.querySelector('input[name="default-flow"]:checked');
+            var defaultFlowId = (chosen && chosen.value) || null;
+            var guess = document.getElementById('guess-conds').checked;
+            btn.disabled = true; btn.textContent = 'Bezig...';
+            fetch(urlBase + '/apply-default-flow', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    file: fileName,
+                    gateway_id: f.element_id,
+                    default_flow_id: defaultFlowId,
+                    guess_conditions: guess,
+                })
+            }).then(function (r) { return r.json(); })
+              .then(function (res) {
+                if (res.error) {
+                    alert('Fout: ' + res.error);
+                    btn.disabled = false; btn.textContent = 'Bevestig & pas toe';
+                    return;
+                }
+                dlg.style.display = 'none';
+                window.location.reload();
+              }).catch(function (e) {
+                alert('Netwerk-fout: ' + e);
+                btn.disabled = false; btn.textContent = 'Bevestig & pas toe';
+              });
+        };
+    }
+
+    function escapeAttr(s) {
+        return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
     // --- Apply dialog ---

@@ -146,6 +146,8 @@ class Finding:
     suggested_object: str = ""      # canonical bv. 'Organisatie'
     suggested_attributes: list[dict] = field(default_factory=list)  # [{name, type}]
     fixable: bool = False           # of een 'Toepassen'-flow mogelijk is
+    # Verrijking voor R008 (gateway zonder default flow):
+    outgoing_flows: list[dict] = field(default_factory=list)  # [{id, name, target_id, target_name}]
 
     def to_dict(self) -> dict:
         return {
@@ -163,6 +165,7 @@ class Finding:
             "suggested_object": self.suggested_object,
             "suggested_attributes": self.suggested_attributes,
             "fixable": self.fixable,
+            "outgoing_flows": self.outgoing_flows,
         }
 
 
@@ -388,16 +391,36 @@ def _review_structural(parsed: ParsedBpmn) -> list[Finding]:
                 suggestion="Verwijder de gateway of voeg een tweede uitgaande"
                            " flow met conditie toe.",
             ))
-        # R008: exclusive zonder default
+        # R008: exclusive zonder default -> lijst uitgaande flows bijvoegen
         if gw.subtype == "exclusiveGateway" and not gw.attributes.get("default"):
+            outgoing = []
+            task_by_id = {t.id: t for t in parsed.tasks}
+            event_by_id = {e.id: e for e in parsed.events}
+            gw_by_id = {g.id: g for g in parsed.gateways}
+            for f in parsed.sequence_flows:
+                if f.attributes.get("source") != gw.id:
+                    continue
+                tgt_id = f.attributes.get("target", "")
+                tgt = (task_by_id.get(tgt_id)
+                       or event_by_id.get(tgt_id)
+                       or gw_by_id.get(tgt_id))
+                outgoing.append({
+                    "id": f.id,
+                    "name": f.name or "",
+                    "target_id": tgt_id,
+                    "target_name": tgt.name if tgt else tgt_id,
+                    "target_kind": tgt.subtype if tgt else "",
+                })
             findings.append(Finding(
                 rule="R008", severity=RULES["R008"]["severity"],
                 source_file=src, element_id=gw.id, element_name=gw.name,
                 element_kind=gw.subtype,
                 message=f"ExclusiveGateway '{gw.name or gw.id}' heeft geen"
                         " default-flow.",
-                suggestion="Markeer een van de uitgaande flows als default via"
-                           " het default-attribuut.",
+                suggestion=("Markeer een van de uitgaande flows als default. "
+                            "Klik 'Toepassen' om te kiezen."),
+                outgoing_flows=outgoing,
+                fixable=len(outgoing) >= 2,
             ))
 
     # DataObjects zonder naam

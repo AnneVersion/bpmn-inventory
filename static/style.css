@@ -648,6 +648,62 @@ h2 { font-size: 1.2rem; margin-top: 36px; margin-bottom: 10px; }
     font-family: inherit;
 }
 
+/* R008 flow options */
+.flow-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 10px 0;
+}
+.flow-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+}
+.flow-option:hover { background: #f2f6fe; }
+.flow-option input[type=radio] { margin: 0; }
+
+/* ERD entity-tabel extra's */
+.lc-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    margin: 1px 2px;
+    border-radius: 3px;
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+}
+.lc-badge.lc-create { background: #d1fae5; color: #065f46; }
+.lc-badge.lc-update { background: #fde68a; color: #713f12; }
+.lc-badge.lc-read   { background: #dbeafe; color: #1e40af; }
+
+.attr-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+    font-size: .82rem;
+}
+.attr-table th, .attr-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+.attr-table th { background: #f0f3f8; color: var(--muted); font-size: .72rem; }
+.tag-pk {
+    background: #fde68a; color: #713f12;
+    padding: 1px 6px; border-radius: 3px;
+    font-size: .7rem; font-weight: 700;
+}
+.tag-fk {
+    background: #dbeafe; color: #1e40af;
+    padding: 1px 6px; border-radius: 3px;
+    font-size: .7rem; font-weight: 700;
+}
+
 /* Tooltip object block */
 .bpmn-tooltip .tt-obj {
     margin-top: 6px;

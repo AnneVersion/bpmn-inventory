@@ -144,6 +144,15 @@ class Attribute:
 
 
 @dataclass
+class LifecycleStep:
+    """Eén interactie-moment van een proces met een entity."""
+    process: str        # procesnaam
+    task: str           # taaknaam
+    action: str         # "CREATE" | "READ" | "UPDATE" | "DELETE"
+    source_file: str
+
+
+@dataclass
 class Entity:
     name: str                                 # canonical, bv. 'Lidmaatschap'
     id: str                                   # SCREAMING_SNAKE voor mermaid
@@ -155,6 +164,13 @@ class Entity:
     is_master: bool = False
     is_weak: bool = False
     parent: str = ""
+    # --- Lifecycle across alle bpmns ---
+    lifecycle: list[LifecycleStep] = field(default_factory=list)
+    creators: set[str] = field(default_factory=set)   # processen die CREATE
+    readers: set[str] = field(default_factory=set)    # processen die READ
+    updaters: set[str] = field(default_factory=set)   # processen die UPDATE
+    # --- User-definition override flag ---
+    user_defined: bool = False
 
 
 @dataclass
@@ -254,9 +270,100 @@ def _infer_attributes(canonical_name: str) -> list[Attribute]:
 # Hoofd-algoritme
 # ---------------------------------------------------------------------------
 
-def build_erd(model: "MergedModel"
+# Werkwoord -> actietype mapping voor lifecycle-inferentie
+# (parallel aan bpmn_review.VERB_ACTIONS, maar met CREATE/READ/UPDATE/DELETE)
+_TASK_VERB_ACTIONS: dict[str, str] = {
+    "toevoeg": "CREATE", "registreer": "CREATE", "invoer": "CREATE",
+    "aanmaak": "CREATE", "creeer": "CREATE", "opvoer": "CREATE",
+    "vastleg": "CREATE", "opslaan": "CREATE", "nieuw": "CREATE",
+    "bewaar": "CREATE",
+    "muteer": "UPDATE", "wijzig": "UPDATE", "pas aan": "UPDATE",
+    "update": "UPDATE", "bijwerk": "UPDATE", "aanpas": "UPDATE",
+    "verwerk": "UPDATE",
+    "zoek op": "READ", "opzoek": "READ", "raadpleeg": "READ",
+    "bekijk": "READ", "ontvang": "READ", "controleer": "READ",
+    "valideer": "READ", "beoordeel": "READ", "goedkeur": "READ",
+    "verwijder": "DELETE", "schrap": "DELETE", "wis": "DELETE",
+    "uitschrijv": "DELETE",
+}
+
+
+def _infer_action_from_task_name(task_name: str, direction: str) -> str:
+    """Leid CREATE/READ/UPDATE/DELETE af uit taaknaam + BPMN-direction.
+
+    `direction` = 'input' (dataInputAssociation) | 'output' (dataOutputAssociation)
+    """
+    low = task_name.lower()
+    for verb, action in _TASK_VERB_ACTIONS.items():
+        if verb in low:
+            # Direction-override: pure output = CREATE/UPDATE; pure input = READ
+            if action == "CREATE" and direction == "input":
+                return "READ"
+            if action == "READ" and direction == "output":
+                return "CREATE"
+            return action
+    # Fallback op direction
+    return "CREATE" if direction == "output" else "READ"
+
+
+def _register_action(entity: "Entity", action: str, process_name: str) -> None:
+    """Registreer CREATE/READ/UPDATE in entity.creators/readers/updaters."""
+    if action == "CREATE":
+        entity.creators.add(process_name)
+    elif action == "UPDATE":
+        entity.updaters.add(process_name)
+    else:  # READ / DELETE
+        entity.readers.add(process_name)
+
+
+def _merge_user_defined_attributes(
+    entity: Entity, user_defs: dict | None
+) -> None:
+    """Merge user-defined attributen (uit /definitions) in de entity.
+
+    User-defs hebben voorrang op inferred attributes met dezelfde naam.
+    Nieuwe user-defined attributen worden toegevoegd.
+    """
+    if not user_defs or "objects" not in user_defs:
+        return
+    for user_name, user_attrs in user_defs["objects"].items():
+        # Case-insensitive match op canonical entity-naam
+        if user_name.lower() != entity.name.lower():
+            continue
+        entity.user_defined = True
+        existing = {a.name: a for a in entity.attributes}
+        for spec in user_attrs:
+            if isinstance(spec, str):
+                a = _parse_attr_spec(spec)
+            else:
+                a = Attribute(
+                    name=(spec.get("name") or "").strip(),
+                    type=spec.get("type") or "string",
+                    required=bool(spec.get("required")),
+                    unique=bool(spec.get("unique")),
+                    derived_from="user-dictionary",
+                )
+            if not a.name:
+                continue
+            if a.name in existing:
+                # Override type/required/unique; PK-status behouden
+                old = existing[a.name]
+                old.type = a.type
+                old.required = a.required
+                old.unique = a.unique
+                old.derived_from = "user-dictionary"
+            else:
+                entity.attributes.append(a)
+        break
+
+
+def build_erd(model: "MergedModel",
+              user_defs: dict | None = None
               ) -> tuple[list[Entity], list[Relationship]]:
-    """Bouw lijst van entities + relationships volgens ERD-theorie."""
+    """Bouw lijst van entities + relationships volgens ERD-theorie.
+
+    `user_defs` = inhoud van /definitions (heeft voorrang bij attributen).
+    """
     entities: dict[str, Entity] = {}        # canonical -> Entity
 
     def _get_or_create(canonical: str, original: str) -> Entity:
@@ -303,9 +410,10 @@ def build_erd(model: "MergedModel"
         if len(e.source_processes) >= 2:
             e.is_anchor = True
 
-    # --- Step 3: task I/O verzamelen per processing
+    # --- Step 3: task I/O verzamelen per processing + LIFECYCLE tracken
     task_io: list[tuple[str, str, set[str], set[str]]] = []  # (bestand, taak, ins, outs)
     for parsed in model.bpmns:
+        proc_name = parsed.process_name or parsed.source_file
         dobj_by_id = {d.id: d for d in parsed.data_objects}
         task_ids = {t.id: t for t in parsed.tasks}
         ins_by_task: dict[str, set[str]] = defaultdict(set)
@@ -334,6 +442,25 @@ def build_erd(model: "MergedModel"
             outs = outs_by_task.get(t.id, set())
             if ins or outs:
                 task_io.append((parsed.source_file, t.name, ins, outs))
+
+            # LIFECYCLE: leg per entity vast welke processen/taken er CREATE /
+            # READ / UPDATE / DELETE doen.
+            for c in ins:
+                if c in entities:
+                    action = _infer_action_from_task_name(t.name or "", "input")
+                    entities[c].lifecycle.append(LifecycleStep(
+                        process=proc_name, task=t.name or t.id,
+                        action=action, source_file=parsed.source_file,
+                    ))
+                    _register_action(entities[c], action, proc_name)
+            for c in outs:
+                if c in entities:
+                    action = _infer_action_from_task_name(t.name or "", "output")
+                    entities[c].lifecycle.append(LifecycleStep(
+                        process=proc_name, task=t.name or t.id,
+                        action=action, source_file=parsed.source_file,
+                    ))
+                    _register_action(entities[c], action, proc_name)
 
     # --- Step 4: relationship evidence verzamelen
     # Alle paren (A,B) die in dezelfde task voorkomen, met direction.
@@ -430,13 +557,93 @@ def build_erd(model: "MergedModel"
                         rel.is_identifying = True
                 break
 
-    # --- Step 7: sorteer voor stabiele output
+    # --- Step 7: user-defined attributen mergen (heeft voorrang)
+    for e in entities.values():
+        _merge_user_defined_attributes(e, user_defs)
+
+    # --- Step 8: sorteer voor stabiele output
     entities_list = sorted(
         entities.values(),
         key=lambda e: (not e.is_master, not e.is_anchor, e.name)
     )
     relationships.sort(key=lambda r: (r.left, r.right))
     return entities_list, relationships
+
+
+# ---------------------------------------------------------------------------
+# Cross-BPMN consistentie-analyse
+# ---------------------------------------------------------------------------
+
+def cross_bpmn_findings(entities: list[Entity]) -> list[dict]:
+    """Detecteer issues die alleen zichtbaar worden over meerdere BPMNs heen.
+
+    Output = lijst van dicts in hetzelfde formaat als bpmn_review findings
+    (zodat ze in dezelfde UI-tabel kunnen verschijnen).
+    """
+    out: list[dict] = []
+
+    for e in entities:
+        # X001: wel gelezen maar nooit aangemaakt (orphan read)
+        if e.readers and not e.creators and not e.is_master:
+            out.append({
+                "rule": "X001",
+                "rule_title": "Entity wordt gelezen maar nooit aangemaakt",
+                "severity": "warning",
+                "source_file": ", ".join(sorted(e.source_processes)),
+                "element_id": e.id,
+                "element_name": e.name,
+                "element_kind": "entity",
+                "message": (f"Entity '{e.name}' wordt gelezen in "
+                            f"{sorted(e.readers)} maar in geen van de "
+                            "aangeleverde BPMNs aangemaakt."),
+                "suggestion": ("Voeg een CREATE-proces toe of markeer als "
+                               "<bpmn:dataStore> (extern master-systeem)."),
+                "matched_keywords": [],
+                "action_type": "", "suggested_object": "",
+                "suggested_attributes": [], "fixable": False,
+            })
+
+        # X002: wel aangemaakt maar nooit gelezen (dead data)
+        if e.creators and not e.readers and not e.updaters and not e.is_anchor:
+            out.append({
+                "rule": "X002",
+                "rule_title": "Entity wordt aangemaakt maar nooit gelezen",
+                "severity": "info",
+                "source_file": ", ".join(sorted(e.source_processes)),
+                "element_id": e.id,
+                "element_name": e.name,
+                "element_kind": "entity",
+                "message": (f"Entity '{e.name}' wordt aangemaakt in "
+                            f"{sorted(e.creators)} maar nergens gelezen. "
+                            "Mogelijk dead data of ontbrekend consumerend "
+                            "proces."),
+                "suggestion": ("Controleer of er een proces ontbreekt dat "
+                               "deze entity gebruikt."),
+                "matched_keywords": [],
+                "action_type": "", "suggested_object": "",
+                "suggested_attributes": [], "fixable": False,
+            })
+
+        # X003: entity heeft verschillende aliases (naamsconsistentie)
+        if len(e.aliases) >= 2:
+            out.append({
+                "rule": "X003",
+                "rule_title": "Zelfde entiteit onder verschillende namen",
+                "severity": "info",
+                "source_file": ", ".join(sorted(e.source_processes)),
+                "element_id": e.id,
+                "element_name": e.name,
+                "element_kind": "entity",
+                "message": (f"Entity '{e.name}' komt in de BPMNs voor onder "
+                            f"meerdere namen: {sorted(e.aliases)}."),
+                "suggestion": ("Harmoniseer de naamgeving of bevestig in "
+                               "/definities dat dit dezelfde entiteit is."),
+                "matched_keywords": sorted(e.aliases),
+                "action_type": "", "suggested_object": e.name,
+                "suggested_attributes": [], "fixable": False,
+            })
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +730,15 @@ def summarize(entities: list[Entity],
             "parent": e.parent,
             "aliases": sorted(e.aliases),
             "source_processes": sorted(e.source_processes),
+            "user_defined": e.user_defined,
+            "lifecycle": {
+                "creators": sorted(e.creators),
+                "readers": sorted(e.readers),
+                "updaters": sorted(e.updaters),
+                "steps": [{"process": s.process, "task": s.task,
+                           "action": s.action, "source_file": s.source_file}
+                          for s in e.lifecycle],
+            },
             "attributes": [{
                 "name": a.name, "type": a.type,
                 "pk": a.is_pk, "fk": a.is_fk, "fk_to": a.fk_to,

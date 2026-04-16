@@ -37,6 +37,7 @@ from docx_export import write_docx                       # noqa: E402
 from bpmn_review import review, summarize                # noqa: E402
 import bpmn_apply                                        # noqa: E402
 import bpmn_defs                                         # noqa: E402
+import bpmn_erd                                          # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,14 +70,22 @@ def _mermaid_id(name: str) -> str:
     return clean[:40]
 
 
-def build_erd_mermaid(model) -> str:
-    """Genereer een mermaid erDiagram uit de merged model.
+def _build_smart_erd(model, user_defs) -> dict:
+    """Bouw het volledige datamodel via bpmn_erd en retourneer dict met
+    mermaid, summary, entities, relationships en cross-BPMN findings."""
+    entities, rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+    mermaid = bpmn_erd.to_mermaid(entities, rels)
+    erd_summary = bpmn_erd.summarize(entities, rels)
+    x_findings = bpmn_erd.cross_bpmn_findings(entities)
+    return {
+        "mermaid": mermaid,
+        "summary": erd_summary,
+        "cross_findings": x_findings,
+    }
 
-    Entiteiten = unieke dataobject-namen.
-    Relaties   = elke taak die twee dataobjects gebruikt (via
-                 dataInput/OutputAssociation) creeert een relatie tussen
-                 die twee entiteiten.
-    """
+
+def build_erd_mermaid(model) -> str:
+    """[DEPRECATED] Oude naïeve Mermaid-generator, bewaard voor backwards compat."""
     # Collect unique entities by display name
     entity_by_name: dict[str, dict] = {}
     anchors = {a.lower() for a in model.anchor_objects()}
@@ -209,6 +218,9 @@ def run_pipeline():
     model = merge(bpmns)
     user_defs = bpmn_defs.load(ROOT)
     findings = review(model, user_defs=user_defs)
+    # Verrijk findings met cross-BPMN analyse uit het datamodel
+    erd = _build_smart_erd(model, user_defs)
+    findings = findings + erd["cross_findings"]
     findings_summary = summarize(findings)
 
     # Zorg dat iedere BPMN een v1 (origineel) heeft in versions/
@@ -272,7 +284,8 @@ def run_pipeline():
             for name in model.anchor_objects()
         ],
         "inventory": [asdict(r) for r in model.inventory],
-        "mermaid_erd": build_erd_mermaid(model),
+        "mermaid_erd": erd["mermaid"],
+        "erd": erd["summary"],
         "findings": findings,
         "findings_summary": findings_summary,
         # Rapport-secties per BPMN (voor inline HTML rapport)
@@ -310,6 +323,7 @@ def session_view(sid: str):
     # oudere versie van de pipeline (en dus sommige velden missen).
     summary.setdefault("bpmn_files", [])
     summary.setdefault("mermaid_erd", "")
+    summary.setdefault("erd", {"entities": [], "relationships": []})
     summary.setdefault("report_per_bpmn", [])
     summary.setdefault("findings", [])
     summary.setdefault("findings_summary", {
@@ -362,6 +376,8 @@ def _regenerate_session_summary(sid: str) -> dict:
     model = merge(bpmns)
     user_defs = bpmn_defs.load(ROOT)
     findings = review(model, user_defs=user_defs)
+    erd = _build_smart_erd(model, user_defs)
+    findings = findings + erd["cross_findings"]
     findings_summary = summarize(findings)
 
     saved_files = [p.name for p in sorted(data_dir.glob("*.bpmn"))] + \
@@ -405,7 +421,8 @@ def _regenerate_session_summary(sid: str) -> dict:
                      "processes": sorted({sf for sf, _ in model.data_object_index[n.lower()]})}
                     for n in model.anchor_objects()],
         "inventory": [asdict(r) for r in model.inventory],
-        "mermaid_erd": "",
+        "mermaid_erd": erd["mermaid"],
+        "erd": erd["summary"],
         "findings": findings,
         "findings_summary": findings_summary,
         "report_per_bpmn": [{
@@ -422,11 +439,7 @@ def _regenerate_session_summary(sid: str) -> dict:
         } for b in model.bpmns],
     }
 
-    # Voeg mermaid ERD terug (oude webapp had een build_erd_mermaid)
-    try:
-        summary["mermaid_erd"] = build_erd_mermaid(model)
-    except Exception:
-        summary["mermaid_erd"] = ""
+    # mermaid_erd en erd zijn al toegewezen via _build_smart_erd hierboven
 
     with (out_dir / "summary.json").open("w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, ensure_ascii=False)
@@ -488,6 +501,56 @@ def session_apply(sid: str):
         "findings_total": summary["findings_summary"]["total"],
         "redirect": f"/session/{sid}#panel=bpmn",
     })
+
+
+@app.route("/session/<sid>/apply-default-flow", methods=["POST"])
+def session_apply_default_flow(sid: str):
+    """R008 fix: zet default-flow op gateway + optioneel conditie-stubs.
+
+    Body: { file, gateway_id, default_flow_id (of null), guess_conditions }
+    """
+    if not _is_valid_sid(sid):
+        abort(404)
+    sdir = SESSIONS_DIR / sid
+    if not sdir.exists():
+        abort(404)
+
+    payload = request.get_json(silent=True) or {}
+    file_name = secure_filename(payload.get("file", ""))
+    gateway_id = payload.get("gateway_id", "")
+    default_flow_id = payload.get("default_flow_id") or None
+    guess = bool(payload.get("guess_conditions", True))
+
+    if not (file_name and gateway_id):
+        return jsonify({"error": "Geef file + gateway_id"}), 400
+
+    data_file = sdir / "data" / file_name
+    if not data_file.exists():
+        return jsonify({"error": f"Bestand {file_name} niet gevonden"}), 404
+
+    try:
+        bpmn_apply.apply_set_default_flow(
+            data_file, gateway_id=gateway_id,
+            default_flow_id=default_flow_id,
+            guess_conditions=guess,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Fix mislukte: {e}"}), 500
+
+    bpmn_apply.ensure_v1(sdir, file_name)
+    entry = bpmn_apply.add_fix_version(
+        sdir, file_name,
+        patched_bytes=data_file.read_bytes(),
+        description=(f"Default-flow ingesteld op {default_flow_id}"
+                     if default_flow_id else
+                     "Conditie-stubs toegevoegd aan uitgaande flows"),
+        applied_finding=payload,
+    )
+    try:
+        _regenerate_session_summary(sid)
+    except Exception as e:
+        return jsonify({"error": f"Regeneratie mislukt: {e}"}), 500
+    return jsonify({"ok": True, "new_version": entry})
 
 
 @app.route("/session/<sid>/upload-version", methods=["POST"])

@@ -389,18 +389,58 @@ def _extract_flows(parent: ET.Element) -> tuple[list[BpmnElement],
                 "xml_tag": "bpmn:association",
             },
         ))
+    # Verzamel alle tasks (activities) onder deze process, plus bereken parent
+    # voor dataInput/Output-associations die NESTED in een task staan (de
+    # BPMN 2.0 standaard laat dat toe; de task is dan impliciet de endpoint).
+    task_ids_in_process = set()
+    for tag in (*TASK_TAGS,):
+        for t_el in parent.iter(f"{{{NS['bpmn']}}}{tag}"):
+            tid = _attr(t_el, "id")
+            if tid:
+                task_ids_in_process.add(tid)
+
     for tag in ("dataInputAssociation", "dataOutputAssociation"):
         for el in parent.iter(f"{{{NS['bpmn']}}}{tag}"):
             src_el = el.find("bpmn:sourceRef", NS)
             tgt_el = el.find("bpmn:targetRef", NS)
+            src_text = (src_el.text if src_el is not None else "") or ""
+            tgt_text = (tgt_el.text if tgt_el is not None else "") or ""
+
+            # Als de associatie genest is in een <task>, dan IS de task
+            # impliciet de andere kant van de koppeling. Zoek parent:
+            parent_task_id = ""
+            # Wandel omhoog tot we een task vinden (gebruik iter+trick)
+            for candidate in parent.iter():
+                if candidate is el:
+                    break
+                # candidate is voorafgaand aan el in tree-order
+            # Eenvoudiger: scan alle task-elementen en kijk welke el als nazaat heeft
+            for t_el in parent.iter():
+                t_id = _attr(t_el, "id")
+                if t_id not in task_ids_in_process:
+                    continue
+                if el in list(t_el.iter()) and el is not t_el:
+                    parent_task_id = t_id
+                    break
+
+            # Voor dataInputAssociation: source = dataObject, target = task
+            #   Als target leeg is, vul parent_task aan.
+            # Voor dataOutputAssociation: source = task, target = dataObject
+            #   Als source leeg is, vul parent_task aan.
+            if tag == "dataInputAssociation" and not tgt_text and parent_task_id:
+                tgt_text = parent_task_id
+            if tag == "dataOutputAssociation" and not src_text and parent_task_id:
+                src_text = parent_task_id
+
             data_assoc.append(BpmnElement(
                 id=_attr(el, "id"),
                 name="",
                 kind="dataAssociation",
                 subtype=tag,
                 attributes={
-                    "source": (src_el.text if src_el is not None else "") or "",
-                    "target": (tgt_el.text if tgt_el is not None else "") or "",
+                    "source": src_text,
+                    "target": tgt_text,
+                    "parent_task": parent_task_id,
                 },
                 evidence={
                     "reason": f"XML-tag <bpmn:{tag}>: koppelt een dataObject "

@@ -157,6 +157,101 @@ def apply_add_dataobject(
 
 
 # ---------------------------------------------------------------------------
+# Apply fix: zet default-flow + slimme conditie-expressies op een gateway
+# ---------------------------------------------------------------------------
+
+# Vaak voorkomende flow-naam -> conditie-expressie mapping
+_FLOW_CONDITION_GUESSES = {
+    "ja":          "${conditie == true}",
+    "yes":         "${conditie == true}",
+    "true":        "${conditie == true}",
+    "nee":         "${conditie == false}",
+    "no":          "${conditie == false}",
+    "false":       "${conditie == false}",
+    "goedgekeurd": "${status == 'goedgekeurd'}",
+    "afgekeurd":   "${status == 'afgekeurd'}",
+    "akkoord":     "${status == 'akkoord'}",
+    "niet akkoord":"${status == 'niet_akkoord'}",
+    "geldig":      "${status == 'geldig'}",
+    "ongeldig":    "${status == 'ongeldig'}",
+    "correct":     "${status == 'correct'}",
+    "incorrect":   "${status == 'incorrect'}",
+    "wel":         "${voorwaarde == true}",
+    "niet":        "${voorwaarde == false}",
+    "bestaat":     "${bestaat == true}",
+    "nieuw":       "${bestaat == false}",
+    "fout":        "${status == 'fout'}",
+    "ok":          "${status == 'ok'}",
+}
+
+
+def _guess_condition(flow_name: str) -> str:
+    """Raad een conditie-expressie op basis van de flow-naam."""
+    if not flow_name:
+        return ""
+    low = flow_name.strip().lower()
+    if low in _FLOW_CONDITION_GUESSES:
+        return _FLOW_CONDITION_GUESSES[low]
+    for key, expr in _FLOW_CONDITION_GUESSES.items():
+        if key in low:
+            return expr
+    # Fallback: sanitize flow name naar identifier
+    safe = re.sub(r"[^A-Za-z0-9_]+", "_", low).strip("_")
+    return f"${{TODO_{safe or 'conditie'}}}"
+
+
+def apply_set_default_flow(
+    bpmn_path: Path,
+    gateway_id: str,
+    default_flow_id: str | None,
+    guess_conditions: bool = True,
+) -> Path:
+    """Zet default-attribuut op een gateway + optioneel conditie-stubs op de
+    overige uitgaande flows.
+
+    `default_flow_id = None` = alleen condities toevoegen, geen default zetten.
+    `guess_conditions = True` = voeg aan niet-default flows een
+    <bpmn:conditionExpression> toe o.b.v. hun naam, als die nog ontbreekt.
+    """
+    tree = ET.parse(bpmn_path)
+    root = tree.getroot()
+
+    gw = _find_element_by_id(root, gateway_id)
+    if gw is None:
+        raise ValueError(f"Gateway {gateway_id!r} niet gevonden")
+
+    # Set default attribute
+    if default_flow_id:
+        gw.set("default", default_flow_id)
+
+    # Vind uitgaande flows en voeg condities toe
+    if guess_conditions:
+        for sf in root.iter(_qname("sequenceFlow")):
+            if sf.get("sourceRef") != gateway_id:
+                continue
+            if sf.get("id") == default_flow_id:
+                continue  # default heeft geen conditie nodig
+            # Check of er al een conditionExpression is
+            existing = sf.find(_qname("conditionExpression"))
+            if existing is not None and (existing.text or "").strip():
+                continue
+            cond = _guess_condition(sf.get("name", ""))
+            if not cond:
+                continue
+            if existing is None:
+                cx = ET.SubElement(sf, _qname("conditionExpression"), {
+                    "{http://www.w3.org/2001/XMLSchema-instance}type":
+                        "bpmn:tFormalExpression",
+                })
+            else:
+                cx = existing
+            cx.text = cond
+
+    tree.write(bpmn_path, xml_declaration=True, encoding="UTF-8")
+    return bpmn_path
+
+
+# ---------------------------------------------------------------------------
 # Versiebeheer per BPMN-bestand binnen een sessie-folder
 # ---------------------------------------------------------------------------
 
