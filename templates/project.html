@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project.name }} - BPMN Inventory{% endblock %}
+
+{% block content %}
+<section class="project-header">
+    <div>
+        <a href="{{ url_for('index') }}" class="btn-secondary">&larr; Alle projecten</a>
+    </div>
+    <h1>{{ project.name }}</h1>
+    <p class="lead">
+        Project <code>{{ project.id }}</code> &middot;
+        {{ project.bpmn_files|length }} BPMN{% if project.bpmn_files|length != 1 %}s{% endif %} &middot;
+        aangemaakt {{ project.created_at.split('T')[0] }}
+    </p>
+</section>
+
+<section class="project-upload">
+    <h2>BPMNs toevoegen</h2>
+    <form method="post" enctype="multipart/form-data"
+          action="{{ url_for('project_add_bpmn', pid=project.id) }}"
+          class="upload-card">
+        <label class="file-drop">
+            <input type="file" name="bpmn_files" multiple accept=".bpmn,.xml"
+                   onchange="this.form.submit();">
+            <span class="file-drop-text">
+                Kies &eacute;&eacute;n of meerdere <strong>.bpmn</strong> bestanden
+            </span>
+            <span class="file-drop-hint">
+                Max {{ max_mb }} MB per bestand &middot; form submit automatisch na selectie
+            </span>
+        </label>
+        <p class="viewer-hint">
+            Als je een bestandsnaam upload die al bestaat, wordt hij als
+            nieuwere versie opgeslagen (oudere versie blijft bewaard).
+        </p>
+    </form>
+</section>
+
+<section>
+    <h2>BPMNs in dit project</h2>
+    {% if not project.bpmn_files %}
+    <div class="empty">
+        <h3>Nog geen BPMNs</h3>
+        <p>Voeg je eerste .bpmn-bestand toe via het formulier hierboven.</p>
+    </div>
+    {% else %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Bestand</th><th>Positie in volgorde</th><th>Acties</th></tr>
+        </thead>
+        <tbody>
+        {% for f in project.bpmn_files %}
+        <tr>
+            <td><code>{{ f }}</code></td>
+            <td>
+                {% set pos = (project.bpmn_order.index(f) + 1) if f in project.bpmn_order else '-' %}
+                <strong>{{ pos }}</strong> / {{ project.bpmn_files|length }}
+            </td>
+            <td>
+                <form method="post"
+                      action="{{ url_for('project_remove_bpmn', pid=project.id) }}"
+                      style="display:inline;"
+                      onsubmit="return confirm('Bestand {{ f }} en alle versies verwijderen uit dit project?');">
+                    <input type="hidden" name="target" value="{{ f }}">
+                    <button type="submit" class="btn-danger">Verwijder</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+
+<section style="margin-top:32px;">
+    <h2>Volgende stappen</h2>
+    <ul>
+        <li><strong>Stap 2 (nog te bouwen):</strong> analyses draaien op alle
+            BPMNs samen &mdash; kwaliteitscheck, ERD en rapport over het hele project.</li>
+        <li><strong>Stap 3 (nog te bouwen):</strong> auto-dependency-volgorde
+            &mdash; de tool leidt af welk proces v&oacute;&oacute;r welk draait op
+            basis van welke entity het cre&euml;ert versus leest.</li>
+        <li><strong>Stap 4 (nog te bouwen):</strong> proces-keten diagram +
+            getimede simulatie.</li>
+    </ul>
+</section>
+
+<section style="margin-top:32px;">
+    <form method="post" action="{{ url_for('project_delete', pid=project.id) }}"
+          onsubmit="return confirm('Project {{ project.name }} en alle BPMNs verwijderen? Dit kan niet ongedaan worden gemaakt.');">
+        <button type="submit" class="btn-danger">Verwijder dit project</button>
+    </form>
+</section>
+{% endblock %}

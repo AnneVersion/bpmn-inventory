@@ -4,10 +4,46 @@
 <section class="hero">
     <h1>BPMN Data-Inventarisatie</h1>
     <p class="lead">
-        Upload een of meerdere <code>.bpmn</code> bestanden. De tool parseert
-        de BPMN&nbsp;2.0 XML, classificeert dataobjecten, identificeert
-        ankerobjecten en genereert een ingevulde inventarisatie als
-        Excel, draw.io, Word en JSON.
+        Analyseer BPMN 2.0 processen, detecteer modelleringsfouten,
+        genereer automatisch dataObjects en bouw een gezamenlijk
+        datamodel per bedrijf.
+    </p>
+</section>
+
+{% if projects %}
+<section class="projects-section">
+    <h2>Projecten</h2>
+    <p class="lead" style="font-size:.92rem;">
+        Groepeer alle BPMNs van één bedrijf in één project om een cumulatief
+        datamodel te krijgen. Oudere BPMN-versies blijven bewaard.
+    </p>
+    <div class="projects-grid">
+        {% for p in projects %}
+        <a class="project-card" href="{{ url_for('project_detail', pid=p.id) }}">
+            <h3>{{ p.name }}</h3>
+            <div class="project-stats">
+                <span><strong>{{ p.bpmn_count }}</strong> BPMN{% if p.bpmn_count != 1 %}s{% endif %}</span>
+            </div>
+            <small>sinds {{ p.created_at.split('T')[0] }}</small>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<section class="new-project-section">
+    <h2>Nieuw project</h2>
+    <form method="post" action="{{ url_for('projects_create') }}" class="inline-form">
+        <input type="text" name="name" placeholder="Projectnaam (bv. 'FNV SOLL')" required>
+        <button type="submit" class="btn-primary">+ Project aanmaken</button>
+    </form>
+</section>
+
+<section>
+    <h2 style="margin-top:32px;">Ad-hoc sessie (geen project)</h2>
+    <p class="lead" style="font-size:.9rem;">
+        Upload direct 1 of meer .bpmn-bestanden voor een eenmalige
+        analyse zonder project.
     </p>
 </section>
 

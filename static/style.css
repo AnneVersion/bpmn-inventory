@@ -157,6 +157,69 @@ a:hover { text-decoration: underline; }
     margin-bottom: 20px;
 }
 
+/* ---------- Projects grid (landing) ---------- */
+.projects-section, .new-project-section {
+    margin: 24px 0;
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.projects-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin-top: 14px;
+}
+.project-card {
+    display: block;
+    padding: 16px 18px;
+    background: #fafbff;
+    border: 1px solid #c7d2fe;
+    border-radius: var(--radius);
+    color: var(--text);
+    transition: transform .12s, border-color .12s, box-shadow .12s;
+}
+.project-card:hover {
+    text-decoration: none;
+    transform: translateY(-2px);
+    border-color: var(--primary);
+    box-shadow: 0 4px 12px rgba(43, 94, 214, .15);
+}
+.project-card h3 {
+    margin: 0 0 8px;
+    color: var(--primary);
+    font-size: 1.1rem;
+}
+.project-card .project-stats {
+    color: var(--text);
+    font-size: .9rem;
+    margin-bottom: 4px;
+}
+.project-card small { color: var(--muted); }
+
+.inline-form {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+}
+.inline-form input[type=text] {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: .95rem;
+}
+.inline-form .btn-primary {
+    margin-top: 0;
+    padding: 8px 18px;
+}
+
+.project-header { margin-bottom: 24px; }
+.project-header h1 { margin: 12px 0 4px; }
+.project-upload { margin: 20px 0; }
+
 /* ---------- Info cards ---------- */
 .info-grid {
     display: grid;

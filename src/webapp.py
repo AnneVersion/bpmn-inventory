@@ -38,6 +38,7 @@ from bpmn_review import review, summarize                # noqa: E402
 import bpmn_apply                                        # noqa: E402
 import bpmn_defs                                         # noqa: E402
 import bpmn_erd                                          # noqa: E402
+import bpmn_project                                      # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -169,7 +170,121 @@ def build_erd_mermaid(model) -> str:
 
 @app.route("/")
 def index():
-    return render_template("index.html", max_mb=MAX_FILE_MB)
+    # Toont beide: projecten (persistent) + ad-hoc sessie upload
+    projects = bpmn_project.list_projects(ROOT)
+    return render_template("index.html", max_mb=MAX_FILE_MB,
+                           projects=projects)
+
+
+# ---------------------------------------------------------------------------
+# Projecten (stap 1: create + list + detail + add-bpmn)
+# ---------------------------------------------------------------------------
+
+@app.route("/projects", methods=["GET"])
+def projects_list():
+    return jsonify(bpmn_project.list_projects(ROOT))
+
+
+@app.route("/projects", methods=["POST"])
+def projects_create():
+    name = (request.form.get("name") or request.get_json(silent=True, force=False) or {}).get("name", "") if request.is_json else request.form.get("name", "")
+    if request.is_json:
+        name = (request.get_json(silent=True) or {}).get("name", "")
+    if not name or not name.strip():
+        return "Geef een projectnaam op.", 400
+    meta = bpmn_project.create(ROOT, name)
+    return redirect(url_for("project_detail", pid=meta["id"]))
+
+
+@app.route("/project/<pid>")
+def project_detail(pid: str):
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    return render_template("project.html", project=meta, max_mb=MAX_FILE_MB)
+
+
+@app.route("/project/<pid>/add-bpmn", methods=["POST"])
+def project_add_bpmn(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+
+    files = request.files.getlist("bpmn_files")
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return "Geen bestanden geüpload.", 400
+
+    for f in files:
+        ext = Path(f.filename).suffix.lower()
+        if ext not in ALLOWED_EXT:
+            return f"'{f.filename}' heeft geen .bpmn/.xml extensie.", 400
+
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in files:
+        safe = secure_filename(f.filename) or f"upload_{uuid.uuid4().hex[:6]}.bpmn"
+        dest = data_dir / safe
+        # Als een file met deze naam al bestaat: nieuwe versie registreren
+        # (het project_dir is zelf een sessie-achtige struct voor versioning)
+        if dest.exists():
+            # Vervang + registreer nieuwe upload-versie
+            bpmn_apply.ensure_v1(bpmn_project.project_root_dir(ROOT, pid), safe)
+            bpmn_apply.add_upload_version(
+                bpmn_project.project_root_dir(ROOT, pid),
+                safe, f.read(),
+                description=f"Nieuwe upload ({f.filename})",
+            )
+        else:
+            f.save(str(dest))
+            # Registreer v1
+            bpmn_apply.ensure_v1(bpmn_project.project_root_dir(ROOT, pid), safe)
+
+    # Update bpmn_order zodat nieuwe files onderaan komen
+    order = list(meta.get("bpmn_order", []))
+    for name in bpmn_project.list_bpmns(ROOT, pid):
+        if name not in order:
+            order.append(name)
+    meta["bpmn_order"] = order
+    bpmn_project.save(ROOT, meta)
+
+    return redirect(url_for("project_detail", pid=pid))
+
+
+@app.route("/project/<pid>/delete", methods=["POST"])
+def project_delete(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    bpmn_project.delete(ROOT, pid)
+    return redirect(url_for("index"))
+
+
+@app.route("/project/<pid>/remove-bpmn", methods=["POST"])
+def project_remove_bpmn(pid: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    target = secure_filename((request.form.get("target") or ""))
+    if not target:
+        return "Geef target mee.", 400
+    data_file = bpmn_project.project_data_dir(ROOT, pid) / target
+    if data_file.exists():
+        data_file.unlink()
+    # Ook versions opruimen
+    base = Path(target).stem
+    versions_dir = bpmn_project.project_root_dir(ROOT, pid) / "versions" / base
+    if versions_dir.exists():
+        import shutil
+        shutil.rmtree(versions_dir, ignore_errors=True)
+    # Update order
+    meta["bpmn_order"] = [n for n in meta.get("bpmn_order", []) if n != target]
+    bpmn_project.save(ROOT, meta)
+    return redirect(url_for("project_detail", pid=pid))
 
 
 @app.route("/run", methods=["POST"])
