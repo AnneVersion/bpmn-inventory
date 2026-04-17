@@ -498,6 +498,75 @@ a:hover { text-decoration: underline; }
     display: flex; flex-wrap: wrap; gap: 4px;
 }
 
+/* Floating tooltip voor hover over entities/relaties */
+.erd-tooltip {
+    position: fixed;
+    z-index: 2500;
+    max-width: 320px;
+    background: #1f2937;
+    color: #f1f5f9;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: .82rem;
+    line-height: 1.45;
+    box-shadow: 0 8px 28px rgba(0,0,0,.4);
+    pointer-events: none;
+}
+.erd-tooltip .tt-title {
+    font-weight: 700;
+    color: #fff;
+    font-size: .9rem;
+    margin-bottom: 4px;
+}
+.erd-tooltip .tt-badge {
+    font-size: .7rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 4px;
+    font-weight: 700;
+    letter-spacing: .04em;
+}
+.erd-tooltip .tt-badge.tt-anchor { background: #ea580c; color: #fff; }
+.erd-tooltip .tt-badge.tt-master { background: #7c3aed; color: #fff; }
+.erd-tooltip .tt-def {
+    color: #e5e7eb;
+    padding: 4px 0;
+    border-top: 1px solid rgba(255,255,255,.15);
+    margin-top: 4px;
+}
+.erd-tooltip .tt-empty {
+    color: #9ca3af;
+    font-style: italic;
+    padding: 4px 0;
+    border-top: 1px solid rgba(255,255,255,.15);
+    margin-top: 4px;
+}
+.erd-tooltip .tt-lc {
+    color: #d1d5db;
+    padding: 4px 0;
+    border-top: 1px solid rgba(255,255,255,.15);
+    margin-top: 4px;
+    font-size: .78rem;
+}
+.erd-tooltip .tt-ev {
+    color: #d1d5db;
+    padding: 4px 0;
+    border-top: 1px solid rgba(255,255,255,.15);
+    margin-top: 4px;
+    font-size: .78rem;
+}
+.erd-tooltip .tt-foot {
+    color: #9ca3af;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255,255,255,.15);
+    margin-top: 4px;
+    font-size: .72rem;
+}
+.erd-tooltip .tt-arr {
+    color: #fcd34d;
+    font-family: "Consolas", ui-monospace, monospace;
+}
+
 .sec-class-table { margin-top: 10px; }
 .sec-class-table td small { color: var(--muted); }
 

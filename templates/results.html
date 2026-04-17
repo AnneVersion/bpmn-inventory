@@ -658,6 +658,9 @@
     </div>
 </div>
 
+<!-- Floating tooltip voor hover over entities/relaties -->
+<div id="erd-tooltip" class="erd-tooltip" style="display:none;"></div>
+
 <script>
 // Globale functies die vanuit Mermaid click worden aangeroepen.
 // Mermaid roept window.entityClicked("Lid") aan bij klik op de entity.
@@ -665,7 +668,7 @@ window.entityClicked = async function (entityName) {
     showEntityModal(entityName);
 };
 
-async function showEntityModal(entityName) {
+window.showEntityModal = async function showEntityModal(entityName) {
     var modal = document.getElementById('entity-modal');
     var body = document.getElementById('entity-modal-body');
     modal.style.display = 'flex';
@@ -695,7 +698,7 @@ async function showEntityModal(entityName) {
         });
     }
     renderEntityModal(entityName, erdEntity, info, erdRels);
-}
+};
 
 function renderEntityModal(entityName, erdEntity, info, allRels) {
     var body = document.getElementById('entity-modal-body');
@@ -818,13 +821,13 @@ function wireModalButtons(entityName) {
 
     document.querySelectorAll('.btn-edit-rel').forEach(function (btn) {
         btn.addEventListener('click', function () {
-            openRelationEditor(btn.getAttribute('data-a'),
-                               btn.getAttribute('data-b'));
+            window.openRelationEditor(btn.getAttribute('data-a'),
+                                       btn.getAttribute('data-b'));
         });
     });
 }
 
-async function openRelationEditor(a, b) {
+window.openRelationEditor = async function openRelationEditor(a, b) {
     var body = document.getElementById('entity-modal-body');
     var res = await fetch('/definitions/relation?a=' + encodeURIComponent(a) +
                           '&b=' + encodeURIComponent(b));
@@ -850,10 +853,13 @@ async function openRelationEditor(a, b) {
       '<input type="text" id="rel-card" placeholder="bv. 1..N / 0..1 / N..M" value="' +
         escapeAttr(info.cardinality || '') + '">' +
       '<div style="margin-top:12px;">' +
-        '<button type="button" class="btn-secondary" onclick="showEntityModal(\'' +
+        '<button type="button" class="btn-secondary" onclick="window.showEntityModal(\'' +
           escapeAttr(a) + '\')">← Terug</button> ' +
         '<button type="button" class="btn-primary" id="btn-save-rel">Opslaan</button>' +
       '</div>';
+
+    // Zorg dat modal zichtbaar is (als hij alleen via hover-click geopend werd)
+    document.getElementById('entity-modal').style.display = 'flex';
 
     document.getElementById('btn-save-rel').onclick = async function () {
         await fetch('/definitions/relation', {
@@ -866,7 +872,7 @@ async function openRelationEditor(a, b) {
         });
         flashButton(this, 'Opgeslagen');
     };
-}
+};
 
 function closeEntityModal() {
     document.getElementById('entity-modal').style.display = 'none';
@@ -980,22 +986,96 @@ function escapeHtml(s) {
      */
     window.attachEntityClickHandlers = function attachEntityClickHandlers(container) {
         var erdEntities = {{ (summary.erd.entities or [])|tojson }};
+        var erdRels = {{ (summary.erd.relationships or [])|tojson }};
         var entityNames = erdEntities.map(function (e) { return e.name; });
+        var entityByName = {};
+        erdEntities.forEach(function(e){ entityByName[e.name] = e; });
 
-        // Zoek alle entity-labels in de SVG
         var svg = container.querySelector('svg');
         if (!svg) return;
 
-        // Mermaid v11 erDiagram: entities zijn <g class="node default">
-        // met een child <g class="label name"><text>EntityNaam</text>.
-        // Elke entity heeft ook rechthoeken <rect class="row-rect-...">
-        // voor attributen; we willen alleen de hele node klikbaar maken.
+        var tooltip = document.getElementById('erd-tooltip');
+
+        function showTooltip(ev, html) {
+            if (!tooltip) return;
+            tooltip.innerHTML = html;
+            tooltip.style.display = 'block';
+            // Position: volg muis, iets rechts+onder
+            var x = (ev.clientX || 0) + 12;
+            var y = (ev.clientY || 0) + 12;
+            // Houd binnen viewport
+            var rect = tooltip.getBoundingClientRect();
+            if (x + rect.width > window.innerWidth - 10) {
+                x = window.innerWidth - rect.width - 10;
+            }
+            if (y + rect.height > window.innerHeight - 10) {
+                y = window.innerHeight - rect.height - 10;
+            }
+            tooltip.style.left = x + 'px';
+            tooltip.style.top = y + 'px';
+        }
+        function hideTooltip() { if (tooltip) tooltip.style.display = 'none'; }
+
+        function entityTooltipSync(name) {
+            /* Rendert direct een tooltip met info uit erd (zonder fetch).
+             * Definitie wordt asynchroon bijgewerkt via de update-callback. */
+            var e = entityByName[name];
+            if (!e) return '<strong>' + name + '</strong>';
+            var parts = [];
+            parts.push('<div class="tt-title">' + escapeHtml(name) +
+                       (e.is_anchor ? ' <span class="tt-badge tt-anchor">ANKER</span>' : '') +
+                       (e.is_master ? ' <span class="tt-badge tt-master">MASTER</span>' : '') +
+                       '</div>');
+            parts.push('<div class="tt-def" data-def-slot>'+
+                       '<em>Laden…</em></div>');
+            var lc = e.lifecycle || {};
+            var procs = [];
+            (lc.creators || []).forEach(p => procs.push('🟢 '+p));
+            (lc.updaters || []).forEach(p => procs.push('🟡 '+p));
+            (lc.readers || []).forEach(p => procs.push('🔵 '+p));
+            if (procs.length) {
+                parts.push('<div class="tt-lc">' +
+                           procs.slice(0,5).map(escapeHtml).join('<br>') +
+                           (procs.length > 5 ? '<br><em>+' + (procs.length-5) + ' meer</em>' : '') +
+                           '</div>');
+            }
+            var nAttrs = (e.attributes || []).length;
+            parts.push('<div class="tt-foot"><em>' + nAttrs + ' attributen · klik voor detail</em></div>');
+            return parts.join('');
+        }
+        function loadEntityDefInto(name) {
+            fetch('/definitions/entity-info/' + encodeURIComponent(name))
+                .then(r => r.json()).catch(_ => ({}))
+                .then(function(info) {
+                    var slot = tooltip.querySelector('[data-def-slot]');
+                    if (!slot) return;
+                    if (info.definition) {
+                        slot.className = 'tt-def';
+                        slot.innerHTML = escapeHtml(info.definition);
+                    } else {
+                        slot.className = 'tt-empty';
+                        slot.textContent = '(Nog geen definitie — klik om toe te voegen)';
+                    }
+                });
+        }
+
+        function relTooltipHtml(rel) {
+            var evidence = (rel.evidence || []).slice(0, 3).map(escapeHtml).join('<br>');
+            return '<div class="tt-title">' + escapeHtml(rel.left) +
+                   ' <span class="tt-arr">' + rel.left_card + ' — ' + rel.right_card + '</span> ' +
+                   escapeHtml(rel.right) + '</div>' +
+                   '<div class="tt-def">' + escapeHtml(rel.label) + '</div>' +
+                   (evidence ? '<div class="tt-ev"><strong>Herkomst:</strong><br>' +
+                     evidence + '</div>' : '') +
+                   '<div class="tt-foot"><em>Klik voor definitie</em></div>';
+        }
+
+        // --- Entities klikbaar + hover ---
         var nodes = svg.querySelectorAll('g.node.default, g.node');
         nodes.forEach(function (g) {
             var nameLabel = g.querySelector('.label.name text, .label.name');
             if (!nameLabel) return;
             var label = (nameLabel.textContent || '').trim();
-            // Mermaid kan soms extra modifiers toevoegen aan label ("[ANKER]")
             var cleanLabel = label.replace(/\s*\[[^\]]+\]\s*$/, '').trim();
             var matched = entityNames.find(function (n) {
                 return n === cleanLabel ||
@@ -1004,13 +1084,63 @@ function escapeHtml(s) {
             if (!matched) return;
             g.style.cursor = 'pointer';
             g.setAttribute('data-entity-name', matched);
-            var titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            titleEl.textContent = 'Klik voor definitie en attributen van ' + matched;
-            g.insertBefore(titleEl, g.firstChild);
+            g.addEventListener('mouseenter', function(ev) {
+                showTooltip(ev, entityTooltipSync(matched));
+                loadEntityDefInto(matched);
+            });
+            g.addEventListener('mousemove', function(ev) {
+                if (tooltip.style.display === 'block') {
+                    tooltip.style.left = ((ev.clientX||0) + 12) + 'px';
+                    tooltip.style.top  = ((ev.clientY||0) + 12) + 'px';
+                }
+            });
+            g.addEventListener('mouseleave', hideTooltip);
             g.addEventListener('click', function (ev) {
                 ev.stopPropagation();
+                hideTooltip();
                 window.entityClicked(matched);
             });
+        });
+
+        // --- Edges (relaties) klikbaar + hover ---
+        // Mermaid erDiagram rendert edges als <path class="er relationshipLine">
+        // en labels als <g class="edgeLabel"><foreignObject> met tekst.
+        // We matchen op label-tekst met rel.label.
+        var edgeLabels = svg.querySelectorAll('g.edgeLabel, .edgeLabel');
+        edgeLabels.forEach(function(lg) {
+            var labelText = (lg.textContent || '').trim();
+            if (!labelText) return;
+            var matchedRel = erdRels.find(function(r) {
+                return r.label === labelText;
+            });
+            if (!matchedRel) return;
+            lg.style.cursor = 'pointer';
+            lg.setAttribute('data-rel-a', matchedRel.left);
+            lg.setAttribute('data-rel-b', matchedRel.right);
+            // Achtergrond-rect om hover-target breder te maken
+            lg.addEventListener('mouseenter', function(ev){
+                showTooltip(ev, relTooltipHtml(matchedRel));
+            });
+            lg.addEventListener('mousemove', function(ev) {
+                if (tooltip.style.display === 'block') {
+                    tooltip.style.left = ((ev.clientX||0) + 12) + 'px';
+                    tooltip.style.top  = ((ev.clientY||0) + 12) + 'px';
+                }
+            });
+            lg.addEventListener('mouseleave', hideTooltip);
+            lg.addEventListener('click', function(ev) {
+                ev.stopPropagation();
+                hideTooltip();
+                window.openRelationEditor(matchedRel.left, matchedRel.right);
+            });
+        });
+
+        // Ook de edge-paths zelf klikbaar maken (voor wanneer je op de pijl klikt)
+        var edgePaths = svg.querySelectorAll('path.er.relationshipLine, g.edgePaths path');
+        edgePaths.forEach(function(p) {
+            // Bij erDiagram weten we de relatie niet direct vanuit path — skip klik op path
+            // maar zorg dat hij visueel response geeft
+            p.style.cursor = 'pointer';
         });
     };
     var mermaidProcmapRendered = false;
