@@ -382,6 +382,122 @@ a:hover { text-decoration: underline; }
 .reg-row.reg-missing { background: #fef1f1; }
 .reg-row.reg-present td:first-child { font-weight: 600; }
 
+/* Entity/Relatie modal overlay (aparte naam om niet te clashen met apply-dialog) */
+.entity-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.45);
+    z-index: 3000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.entity-modal {
+    background: #fff;
+    border-radius: 10px;
+    padding: 24px 28px;
+    width: min(720px, 95vw);
+    max-height: 88vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 60px rgba(0,0,0,.4);
+    position: relative;
+}
+.entity-modal .modal-close {
+    position: absolute;
+    top: 10px; right: 14px;
+    background: transparent;
+    border: 0;
+    font-size: 1.8rem;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+}
+.entity-modal .modal-close:hover { color: var(--danger); }
+.entity-modal h2 { margin-top: 0; margin-bottom: 6px; }
+.entity-modal h3 { margin-top: 18px; margin-bottom: 6px; font-size: .92rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.entity-modal textarea {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: .92rem;
+    resize: vertical;
+}
+.entity-modal input[type=text] {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: .85rem;
+}
+.attr-editor-table .attr-def-input {
+    width: calc(100% - 80px);
+    margin-right: 6px;
+}
+.attr-editor-table .btn-save-attr {
+    padding: 4px 10px;
+    background: var(--primary);
+    color: #fff;
+    border: 0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: .78rem;
+}
+.attr-editor-table .btn-save-attr:hover { background: var(--primary-d); }
+.attr-editor-table .btn-save-attr:disabled { background: #10b981; }
+
+.rel-list { list-style: none; padding: 0; margin: 0; }
+.rel-list li {
+    padding: 10px 12px;
+    background: #fafbff;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--primary);
+    border-radius: 5px;
+    margin-bottom: 6px;
+}
+.rel-list .rel-card {
+    font-family: "Consolas", ui-monospace, monospace;
+    font-size: .82rem;
+    color: var(--text);
+}
+.rel-list .rel-label {
+    margin-left: 10px;
+    color: var(--muted);
+    font-size: .82rem;
+    font-style: italic;
+}
+.rel-list .rel-evidence {
+    margin-top: 4px;
+    color: var(--muted);
+}
+.btn-edit-rel {
+    margin-left: 8px;
+    padding: 3px 10px;
+    background: transparent;
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    border-radius: 4px;
+    font-size: .78rem;
+    cursor: pointer;
+}
+.btn-edit-rel:hover {
+    background: var(--primary);
+    color: #fff;
+}
+
+/* Mermaid entities klikbaar maken */
+.mermaid-wrap svg g.er.entityBox { cursor: pointer; }
+.mermaid-wrap svg g.er.entityBox:hover rect { fill: #e0e7ff !important; }
+.mermaid-wrap svg g.node { cursor: pointer; }
+.mermaid-wrap svg g.node:hover rect { filter: brightness(1.05); }
+
+.lc-row {
+    display: flex; flex-wrap: wrap; gap: 4px;
+}
+
 .sec-class-table { margin-top: 10px; }
 .sec-class-table td small { color: var(--muted); }
 

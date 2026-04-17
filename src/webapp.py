@@ -1501,6 +1501,78 @@ def definitions_delete_object(name: str):
     return jsonify({"ok": True, "data": bpmn_defs.load(ROOT)})
 
 
+@app.route("/definitions/entity-info/<name>", methods=["GET"])
+def definitions_entity_info(name: str):
+    """Geef per-entity de definitie + attributen + hun definities terug."""
+    data = bpmn_defs.load(ROOT)
+    attrs = data.get("objects", {}).get(name, [])
+    norm_attrs = []
+    for a in attrs:
+        if isinstance(a, dict):
+            norm_attrs.append({
+                "name": a.get("name", ""),
+                "type": a.get("type", "string"),
+                "required": bool(a.get("required", False)),
+                "unique": bool(a.get("unique", False)),
+                "pk": bool(a.get("pk", False)),
+                "fk": bool(a.get("fk", False)),
+                "fk_to": a.get("fk_to", ""),
+                "definition": a.get("definition", ""),
+            })
+    return jsonify({
+        "name": name,
+        "definition": data.get("object_definitions", {}).get(name, ""),
+        "attributes": norm_attrs,
+        "discovered": data.get("discovered_objects", {}).get(name, {}),
+    })
+
+
+@app.route("/definitions/entity-definition", methods=["POST"])
+def definitions_set_entity_definition():
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    definition = payload.get("definition", "")
+    if not name:
+        return jsonify({"error": "Geef name"}), 400
+    bpmn_defs.set_object_definition(ROOT, name, definition)
+    return jsonify({"ok": True})
+
+
+@app.route("/definitions/attribute-definition", methods=["POST"])
+def definitions_set_attribute_definition():
+    payload = request.get_json(silent=True) or {}
+    entity = (payload.get("entity") or "").strip()
+    attr = (payload.get("attribute") or "").strip()
+    definition = payload.get("definition", "")
+    if not entity or not attr:
+        return jsonify({"error": "Geef entity + attribute"}), 400
+    bpmn_defs.set_attribute_definition(ROOT, entity, attr, definition)
+    return jsonify({"ok": True})
+
+
+@app.route("/definitions/relation", methods=["GET"])
+def definitions_get_relation():
+    a = (request.args.get("a") or "").strip()
+    b = (request.args.get("b") or "").strip()
+    if not (a and b):
+        return jsonify({"error": "Geef a en b"}), 400
+    info = bpmn_defs.get_relation_definition(ROOT, a, b)
+    return jsonify(info)
+
+
+@app.route("/definitions/relation", methods=["POST"])
+def definitions_set_relation():
+    payload = request.get_json(silent=True) or {}
+    a = (payload.get("a") or "").strip()
+    b = (payload.get("b") or "").strip()
+    definition = payload.get("definition", "")
+    cardinality = payload.get("cardinality", "")
+    if not (a and b):
+        return jsonify({"error": "Geef a en b"}), 400
+    bpmn_defs.set_relation_definition(ROOT, a, b, definition, cardinality)
+    return jsonify({"ok": True})
+
+
 def _resolve_source_file(sdir: Path, safe_filename: str) -> Path | None:
     """Geef het pad naar v1 als aanwezig, anders de actieve data-file.
 

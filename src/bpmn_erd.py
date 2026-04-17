@@ -141,6 +141,7 @@ class Attribute:
     is_fk: bool = False
     fk_to: str = ""
     derived_from: str = ""
+    definition: str = ""
 
 
 @dataclass
@@ -352,7 +353,11 @@ def _merge_user_defined_attributes(
                 old.required = a.required
                 old.unique = a.unique
                 old.derived_from = "user-dictionary"
+                if spec.get("definition") if isinstance(spec, dict) else None:
+                    old.definition = spec.get("definition") or ""
             else:
+                if isinstance(spec, dict) and spec.get("definition"):
+                    a.definition = spec["definition"]
                 entity.attributes.append(a)
         break
 
@@ -772,8 +777,15 @@ _CARD_RIGHT = {
 
 
 def to_mermaid(entities: list[Entity],
-               relationships: list[Relationship]) -> str:
-    """Genereer een Mermaid erDiagram string."""
+               relationships: list[Relationship],
+               interactive: bool = True) -> str:
+    """Genereer een Mermaid erDiagram string.
+
+    Als interactive=True: voegt click-directives toe voor entities zodat
+    een JS-handler 'entityClicked(naam)' wordt aangeroepen. Relaties zijn
+    in Mermaid niet direct klikbaar; de JS-kant bouwt daar een overlay
+    voor op basis van tekst-matching.
+    """
     if not entities:
         return ""
     lines: list[str] = ["erDiagram"]
@@ -814,6 +826,10 @@ def to_mermaid(entities: list[Entity],
         label = r.label.replace('"', "'")
         lines.append(f'    {left.id} {lc}{conn}{rc} {right.id} : "{label}"')
 
+    # NB: erDiagram ondersteunt geen click-directives (alleen flowchart).
+    # De JS-kant voegt click-handlers toe door entity-labels in de SVG
+    # terug te matchen op entity-namen uit summary.erd.entities.
+
     return "\n".join(lines)
 
 
@@ -844,6 +860,7 @@ def summarize(entities: list[Entity],
                 "pk": a.is_pk, "fk": a.is_fk, "fk_to": a.fk_to,
                 "required": a.required, "unique": a.unique,
                 "derived_from": a.derived_from,
+                "definition": getattr(a, "definition", ""),
             } for a in e.attributes],
         } for e in entities],
         "relationships": [{

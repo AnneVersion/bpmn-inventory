@@ -49,7 +49,8 @@ def save(root: Path, data: dict) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def upsert_object(root: Path, name: str, attributes: list[dict]) -> dict:
+def upsert_object(root: Path, name: str, attributes: list[dict],
+                  definition: str | None = None) -> dict:
     data = load(root)
     clean_name = name.strip()
     if not clean_name:
@@ -63,6 +64,7 @@ def upsert_object(root: Path, name: str, attributes: list[dict]) -> dict:
                 "type": (parts[1] if len(parts) > 1 else "string").strip(),
                 "required": "required" in parts[2:] if len(parts) > 2 else False,
                 "unique":   "uniek"    in parts[2:] if len(parts) > 2 else False,
+                "definition": "",
             })
         elif isinstance(a, dict):
             nm = (a.get("name") or "").strip()
@@ -73,10 +75,80 @@ def upsert_object(root: Path, name: str, attributes: list[dict]) -> dict:
                 "type": (a.get("type") or "string").strip(),
                 "required": bool(a.get("required", False)),
                 "unique": bool(a.get("unique", False)),
+                "definition": (a.get("definition") or "").strip(),
             })
     data["objects"][clean_name] = norm
+
+    # Object-definities worden apart opgeslagen zodat upsert_object
+    # (met alleen attributen) een bestaande definitie niet overschrijft.
+    data.setdefault("object_definitions", {})
+    if definition is not None:
+        # Alleen zetten als explicit meegegeven (None = ongewijzigd)
+        data["object_definitions"][clean_name] = definition.strip()
+
     save(root, data)
     return data
+
+
+def set_object_definition(root: Path, name: str, definition: str) -> dict:
+    """Update alleen de definitie van een object, laat attributen staan."""
+    data = load(root)
+    data.setdefault("object_definitions", {})
+    data["object_definitions"][name] = definition.strip()
+    # Zorg dat het object ook in objects staat (stub)
+    if name not in data.get("objects", {}):
+        data.setdefault("objects", {})[name] = []
+    save(root, data)
+    return data
+
+
+def get_object_definition(root: Path, name: str) -> str:
+    return load(root).get("object_definitions", {}).get(name, "")
+
+
+def set_attribute_definition(root: Path, entity: str, attr_name: str,
+                             definition: str) -> dict:
+    """Update alleen de definition van een specifiek attribuut."""
+    data = load(root)
+    attrs = data.setdefault("objects", {}).setdefault(entity, [])
+    found = False
+    for a in attrs:
+        if isinstance(a, dict) and a.get("name") == attr_name:
+            a["definition"] = definition.strip()
+            found = True
+            break
+    if not found:
+        attrs.append({
+            "name": attr_name, "type": "string",
+            "required": False, "unique": False,
+            "definition": definition.strip(),
+        })
+    save(root, data)
+    return data
+
+
+# --- Relatie-definities: key = "EntityA|EntityB" (sorted)
+def relation_key(a: str, b: str) -> str:
+    return "|".join(sorted([a, b]))
+
+
+def set_relation_definition(root: Path, entity_a: str, entity_b: str,
+                            definition: str, cardinality: str = "") -> dict:
+    data = load(root)
+    data.setdefault("relations", {})
+    key = relation_key(entity_a, entity_b)
+    data["relations"][key] = {
+        "left": min(entity_a, entity_b),
+        "right": max(entity_a, entity_b),
+        "definition": definition.strip(),
+        "cardinality": cardinality.strip(),
+    }
+    save(root, data)
+    return data
+
+
+def get_relation_definition(root: Path, entity_a: str, entity_b: str) -> dict:
+    return load(root).get("relations", {}).get(relation_key(entity_a, entity_b), {})
 
 
 def delete_object(root: Path, name: str) -> dict:

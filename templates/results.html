@@ -650,6 +650,249 @@
     window.__mermaid = mermaid;
 </script>
 
+<!-- Entity/relatie editor modal (komt alleen in view als geopend) -->
+<div id="entity-modal" class="entity-modal-backdrop" style="display:none;">
+    <div class="entity-modal">
+        <button type="button" class="modal-close" onclick="closeEntityModal()">×</button>
+        <div id="entity-modal-body">loading…</div>
+    </div>
+</div>
+
+<script>
+// Globale functies die vanuit Mermaid click worden aangeroepen.
+// Mermaid roept window.entityClicked("Lid") aan bij klik op de entity.
+window.entityClicked = async function (entityName) {
+    showEntityModal(entityName);
+};
+
+async function showEntityModal(entityName) {
+    var modal = document.getElementById('entity-modal');
+    var body = document.getElementById('entity-modal-body');
+    modal.style.display = 'flex';
+    body.innerHTML = '<p><em>Laden…</em></p>';
+
+    // Combineer ERD-data (herkomst, lifecycle) met opgeslagen definities
+    var erdEntities = {{ (summary.erd.entities or [])|tojson }};
+    var erdRels = {{ (summary.erd.relationships or [])|tojson }};
+    var erdEntity = erdEntities.find(function (e) { return e.name === entityName; });
+
+    var res = await fetch('/definitions/entity-info/' + encodeURIComponent(entityName));
+    var info = await res.json();
+
+    // Als dictionary leeg is: val terug op ERD-attributen (auto-discovered)
+    if ((!info.attributes || info.attributes.length === 0) && erdEntity && erdEntity.attributes) {
+        info.attributes = erdEntity.attributes.map(function (a) {
+            return {
+                name: a.name,
+                type: a.type || 'string',
+                required: !!a.required,
+                unique: !!a.unique,
+                pk: !!a.pk,
+                fk: !!a.fk,
+                fk_to: a.fk_to || '',
+                definition: a.definition || '',
+            };
+        });
+    }
+    renderEntityModal(entityName, erdEntity, info, erdRels);
+}
+
+function renderEntityModal(entityName, erdEntity, info, allRels) {
+    var body = document.getElementById('entity-modal-body');
+    var relsForEntity = allRels.filter(function (r) {
+        return r.left === entityName || r.right === entityName;
+    });
+
+    var attrsRows = (info.attributes || []).map(function (a, i) {
+        var flag = a.pk ? '<span class="tag-pk">PK</span>'
+                  : a.fk ? '<span class="tag-fk">FK→' + escapeHtml(a.fk_to || '') + '</span>'
+                  : '';
+        return '<tr data-attr="' + escapeAttr(a.name) + '">' +
+                 '<td><code>' + escapeHtml(a.name) + '</code> ' + flag + '</td>' +
+                 '<td><small>' + escapeHtml(a.type || 'string') + '</small></td>' +
+                 '<td><small>' +
+                   (a.required ? 'required ' : '') +
+                   (a.unique ? 'uniek' : '') +
+                 '</small></td>' +
+                 '<td>' +
+                   '<input type="text" class="attr-def-input" ' +
+                     'placeholder="Betekenis van dit attribuut..." ' +
+                     'value="' + escapeAttr(a.definition || '') + '" ' +
+                     'data-attr="' + escapeAttr(a.name) + '">' +
+                   '<button class="btn-save-attr" data-attr="' +
+                     escapeAttr(a.name) + '">Opslaan</button>' +
+                 '</td>' +
+               '</tr>';
+    }).join('');
+
+    var relsHtml = relsForEntity.length
+        ? '<ul class="rel-list">' + relsForEntity.map(function (r) {
+              var other = r.left === entityName ? r.right : r.left;
+              return '<li>' +
+                       '<span class="rel-card">' + r.left + ' ' + r.left_card + ' — ' +
+                       r.right_card + ' ' + r.right + '</span>' +
+                       '<span class="rel-label">' + escapeHtml(r.label) + '</span>' +
+                       ' <button class="btn-edit-rel" data-a="' + escapeAttr(entityName) +
+                       '" data-b="' + escapeAttr(other) + '">Definieer relatie</button>' +
+                       (r.evidence && r.evidence.length
+                         ? '<div class="rel-evidence"><small>Herkomst: ' +
+                           escapeHtml(r.evidence.slice(0, 2).join(' / ')) + '</small></div>'
+                         : '') +
+                     '</li>';
+          }).join('') + '</ul>'
+        : '<p><em>Geen relaties met andere entities gevonden.</em></p>';
+
+    // Lifecycle / herkomst
+    var lc = erdEntity ? erdEntity.lifecycle : {creators: [], readers: [], updaters: []};
+    var procList = function (arr, tag) {
+        return arr.length
+            ? arr.map(function (p) {
+                return '<span class="lc-badge lc-' + tag + '">' + tag.toUpperCase() + ': ' +
+                       escapeHtml(p) + '</span>';
+              }).join(' ')
+            : '<em>-</em>';
+    };
+
+    body.innerHTML =
+      '<h2>' + escapeHtml(entityName) + '</h2>' +
+      (erdEntity && erdEntity.is_anchor ? '<span class="badge cls-bijzonder-persoonsgegeven">ANKER</span> ' : '') +
+      (erdEntity && erdEntity.is_master ? '<span class="badge cls-vertrouwelijk">MASTER</span> ' : '') +
+
+      '<h3>Definitie</h3>' +
+      '<textarea id="entity-def" rows="3" placeholder="Zakelijke betekenis van ' +
+        escapeAttr(entityName) + '...">' +
+        escapeHtml(info.definition || '') + '</textarea>' +
+      '<button id="btn-save-entity-def" class="btn-primary" style="margin-top:6px;">' +
+        'Definitie opslaan</button>' +
+
+      '<h3 style="margin-top:18px;">Attributen</h3>' +
+      '<table class="data-table attr-editor-table">' +
+        '<thead><tr>' +
+          '<th>Naam</th><th>Type</th><th>Flags</th><th>Definitie</th>' +
+        '</tr></thead><tbody>' + attrsRows + '</tbody>' +
+      '</table>' +
+
+      '<h3 style="margin-top:18px;">Lifecycle</h3>' +
+      '<div class="lc-row">' +
+        procList(lc.creators || [], 'create') + ' ' +
+        procList(lc.updaters || [], 'update') + ' ' +
+        procList(lc.readers || [], 'read') +
+      '</div>' +
+
+      '<h3 style="margin-top:18px;">Relaties</h3>' +
+      relsHtml +
+
+      (erdEntity && erdEntity.aliases && erdEntity.aliases.length
+        ? '<h3 style="margin-top:18px;">Aliases</h3><p><small>' +
+           erdEntity.aliases.map(escapeHtml).join(', ') + '</small></p>'
+        : '');
+
+    wireModalButtons(entityName);
+}
+
+function wireModalButtons(entityName) {
+    document.getElementById('btn-save-entity-def').onclick = async function () {
+        var val = document.getElementById('entity-def').value;
+        await fetch('/definitions/entity-definition', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: entityName, definition: val })
+        });
+        flashButton(this, 'Opgeslagen!');
+    };
+
+    document.querySelectorAll('.btn-save-attr').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+            var attr = btn.getAttribute('data-attr');
+            var input = document.querySelector('.attr-def-input[data-attr="' +
+                CSS.escape(attr) + '"]');
+            await fetch('/definitions/attribute-definition', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    entity: entityName, attribute: attr,
+                    definition: input.value
+                })
+            });
+            flashButton(btn, 'Opgeslagen');
+        });
+    });
+
+    document.querySelectorAll('.btn-edit-rel').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            openRelationEditor(btn.getAttribute('data-a'),
+                               btn.getAttribute('data-b'));
+        });
+    });
+}
+
+async function openRelationEditor(a, b) {
+    var body = document.getElementById('entity-modal-body');
+    var res = await fetch('/definitions/relation?a=' + encodeURIComponent(a) +
+                          '&b=' + encodeURIComponent(b));
+    var info = await res.json();
+
+    var erdRels = {{ (summary.erd.relationships or [])|tojson }};
+    var rel = erdRels.find(function (r) {
+        return (r.left === a && r.right === b) || (r.left === b && r.right === a);
+    });
+    var autoLabel = rel ? rel.label : '';
+    var evidence = rel && rel.evidence ? rel.evidence.join(' / ') : '';
+
+    body.innerHTML =
+      '<h2>Relatie: ' + escapeHtml(a) + ' ↔ ' + escapeHtml(b) + '</h2>' +
+      '<p><strong>Auto-afgeleid label:</strong> ' + escapeHtml(autoLabel || '(geen)') + '</p>' +
+      (evidence
+        ? '<p><strong>Herkomst:</strong> <small>' + escapeHtml(evidence) + '</small></p>'
+        : '') +
+      '<h3>Eigen definitie</h3>' +
+      '<textarea id="rel-def" rows="3" placeholder="Zakelijke betekenis van de relatie...">' +
+        escapeHtml(info.definition || '') + '</textarea>' +
+      '<h3 style="margin-top:10px;">Cardinaliteit (overschrijf auto)</h3>' +
+      '<input type="text" id="rel-card" placeholder="bv. 1..N / 0..1 / N..M" value="' +
+        escapeAttr(info.cardinality || '') + '">' +
+      '<div style="margin-top:12px;">' +
+        '<button type="button" class="btn-secondary" onclick="showEntityModal(\'' +
+          escapeAttr(a) + '\')">← Terug</button> ' +
+        '<button type="button" class="btn-primary" id="btn-save-rel">Opslaan</button>' +
+      '</div>';
+
+    document.getElementById('btn-save-rel').onclick = async function () {
+        await fetch('/definitions/relation', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                a: a, b: b,
+                definition: document.getElementById('rel-def').value,
+                cardinality: document.getElementById('rel-card').value,
+            })
+        });
+        flashButton(this, 'Opgeslagen');
+    };
+}
+
+function closeEntityModal() {
+    document.getElementById('entity-modal').style.display = 'none';
+}
+function flashButton(btn, msg) {
+    var orig = btn.textContent;
+    btn.textContent = msg;
+    btn.disabled = true;
+    setTimeout(function () {
+        btn.textContent = orig;
+        btn.disabled = false;
+    }, 1200);
+}
+function escapeAttr(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+           .replace(/</g, '&lt;');
+}
+// escapeHtml is ook nodig buiten de IIFE (in modal-rendering)
+function escapeHtml(s) {
+    return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+</script>
+
 <script>
 (function () {
     // --- Tabs ---
@@ -705,11 +948,17 @@
     var mermaidRendered = false;
     var mermaidInlineRendered = false;
     function renderMermaid() {
-        if (mermaidRendered) return;
         var el = document.getElementById('mermaid-erd');
         if (!el || !window.__mermaid) return;
+        if (mermaidRendered) {
+            window.attachEntityClickHandlers(el);  // zorg dat click-handlers er zijn
+            return;
+        }
         window.__mermaid.run({ nodes: [el] })
-            .then(function () { mermaidRendered = true; })
+            .then(function () {
+                mermaidRendered = true;
+                window.attachEntityClickHandlers(el);
+            })
             .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
     }
     function renderMermaidInline() {
@@ -717,9 +966,53 @@
         var el = document.getElementById('mermaid-erd-inline');
         if (!el || !window.__mermaid) return;
         window.__mermaid.run({ nodes: [el] })
-            .then(function () { mermaidInlineRendered = true; })
+            .then(function () {
+                mermaidInlineRendered = true;
+                window.attachEntityClickHandlers(el);
+            })
             .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
     }
+
+    /**
+     * Voeg click-handlers toe aan Mermaid erDiagram entities.
+     * Globaal opgeslagen zodat lazy-render (die binnen IIFE wordt gecalled)
+     * én window.entityClicked buiten IIFE dit kan bereiken.
+     */
+    window.attachEntityClickHandlers = function attachEntityClickHandlers(container) {
+        var erdEntities = {{ (summary.erd.entities or [])|tojson }};
+        var entityNames = erdEntities.map(function (e) { return e.name; });
+
+        // Zoek alle entity-labels in de SVG
+        var svg = container.querySelector('svg');
+        if (!svg) return;
+
+        // Mermaid v11 erDiagram: entities zijn <g class="node default">
+        // met een child <g class="label name"><text>EntityNaam</text>.
+        // Elke entity heeft ook rechthoeken <rect class="row-rect-...">
+        // voor attributen; we willen alleen de hele node klikbaar maken.
+        var nodes = svg.querySelectorAll('g.node.default, g.node');
+        nodes.forEach(function (g) {
+            var nameLabel = g.querySelector('.label.name text, .label.name');
+            if (!nameLabel) return;
+            var label = (nameLabel.textContent || '').trim();
+            // Mermaid kan soms extra modifiers toevoegen aan label ("[ANKER]")
+            var cleanLabel = label.replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+            var matched = entityNames.find(function (n) {
+                return n === cleanLabel ||
+                       n.toLowerCase() === cleanLabel.toLowerCase();
+            });
+            if (!matched) return;
+            g.style.cursor = 'pointer';
+            g.setAttribute('data-entity-name', matched);
+            var titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            titleEl.textContent = 'Klik voor definitie en attributen van ' + matched;
+            g.insertBefore(titleEl, g.firstChild);
+            g.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                window.entityClicked(matched);
+            });
+        });
+    };
     var mermaidProcmapRendered = false;
     function renderMermaidProcmap() {
         if (mermaidProcmapRendered) return;
