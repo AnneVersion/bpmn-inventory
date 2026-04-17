@@ -994,6 +994,21 @@ function escapeHtml(s) {
         var svg = container.querySelector('svg');
         if (!svg) return;
 
+        // Zet SVG op natuurlijke breedte zodat tekst leesbaar is en container
+        // horizontaal kan scrollen i.p.v. alles te comprimeren.
+        var vb = (svg.getAttribute('viewBox') || '').split(/\s+/);
+        if (vb.length === 4) {
+            var naturalW = parseFloat(vb[2]);
+            var naturalH = parseFloat(vb[3]);
+            if (naturalW > 0) {
+                svg.setAttribute('width', naturalW + 'px');
+                svg.setAttribute('height', naturalH + 'px');
+                svg.style.maxWidth = 'none';
+                svg.style.width = naturalW + 'px';
+                svg.style.height = naturalH + 'px';
+            }
+        }
+
         var tooltip = document.getElementById('erd-tooltip');
 
         function showTooltip(ev, html) {
