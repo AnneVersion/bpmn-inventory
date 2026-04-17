@@ -34,6 +34,27 @@ DC_NS = "http://www.omg.org/spec/DD/20100524/DC"
 DIAG_NS = "http://www.omg.org/spec/DD/20100524/DI"
 
 
+# Veld-namen die we in SOLL-documentatie herkennen (case-insensitive)
+FIELD_ALIASES: dict[str, list[str]] = {
+    "trigger":     ["trigger", "trigger van het proces", "start-trigger", "aanleiding"],
+    "doel":        ["doel", "doelstelling", "scope"],
+    "resultaat":   ["resultaat", "eindresultaat", "output"],
+    "actoren":     ["actoren", "actorenrollen", "actoren/rollen", "rollen",
+                    "betrokken organisaties", "betrokken partijen",
+                    "stakeholders"],
+    "stappen":     ["stappen", "processtappen", "werkwijze", "procesbeschrijving",
+                    "procesbeschijving", "procesverloop"],
+    "data":        ["gebruikte data", "gegevens", "dataobjecten", "entiteiten",
+                    "informatie"],
+    "systemen":    ["gebruikte systemen", "systemen", "gebruikte kanalen",
+                    "ict-middelen", "applicaties", "tools"],
+    "beslispunten":["beslispunten", "beslissingen", "keuzes", "gateways"],
+    "regels":      ["business rules", "regels", "voorwaarden", "randvoorwaarden"],
+    "risicos":     ["risicos", "risico's", "risk"],
+    "kpis":        ["kpis", "kpi's", "kpi", "stuurinformatie", "metrics"],
+}
+
+
 # Trefwoorden die een heading als ECHTE proces-beschrijving markeren
 PROCESS_HEADING_HINTS = [
     "proces", "procedure", "workflow", "werkwijze", "stappen",
@@ -304,6 +325,123 @@ ATTR_HINTS = [
 
 
 @dataclass
+class ProcessFields:
+    """Per-sectie gestructureerde velden, afgeleid uit SOLL-documentatie."""
+    trigger: str = ""
+    doel: str = ""
+    resultaat: str = ""
+    actoren: list[str] = field(default_factory=list)
+    stappen: list[str] = field(default_factory=list)         # imperatieve zinnen
+    data_items: list[str] = field(default_factory=list)      # entity-namen
+    systemen: list[str] = field(default_factory=list)        # systeemnamen
+    beslispunten: list[str] = field(default_factory=list)    # "condition : outcome1 / outcome2"
+    regels: list[str] = field(default_factory=list)
+    raw_fields: dict = field(default_factory=dict)
+
+
+def _match_field_alias(text: str) -> str | None:
+    """Match 'Trigger van het proces' -> 'trigger', 'Actoren/Rollen' ->
+    'actoren'. Return canonical field-key of None."""
+    low = text.strip().lower().rstrip(":").strip()
+    for canonical, aliases in FIELD_ALIASES.items():
+        for alias in aliases:
+            if low == alias or low.startswith(alias + " "):
+                return canonical
+    return None
+
+
+def _extract_bullets_from_table(paragraphs: list[str],
+                                start_idx: int) -> tuple[list[str], int]:
+    """Verzamel aaneensluitende bullet-items/regels tot een volgend veld begint.
+
+    Retourneert (lines, end_idx)."""
+    lines: list[str] = []
+    i = start_idx
+    while i < len(paragraphs):
+        p = paragraphs[i].strip()
+        if not p:
+            i += 1
+            continue
+        # Als dit alleen een veldnaam is, stop
+        if _match_field_alias(p):
+            break
+        # Als dit 'Veld: waarde' begint, stop ook (anders eten we het volgende
+        # veld op dat op dezelfde regel lijkt)
+        m = re.match(r"^([A-Za-z][\w\s/'-]{1,40}?)\s*[:.]\s+.+$", p)
+        if m and _match_field_alias(m.group(1)):
+            break
+        # Strip gemeenschappelijke bullet-prefixes
+        clean = re.sub(r"^[-*\u2022\u25cb\u25cf\u25aa\u25ab]\s*", "", p)
+        clean = re.sub(r"^\d+[.)]\s+", "", clean)   # 1. of 1)
+        if clean:
+            lines.append(clean)
+        i += 1
+    return lines, i
+
+
+def extract_process_fields(section: "DocSection") -> ProcessFields:
+    """Herken SOLL-velden in een sectie en groepeer paragrafen per veld.
+
+    Werkwijze:
+    - Behandel titel van subsectie als kandidaat veld-naam (bv H2 'Trigger')
+    - Behandel eerste zin van een paragraaf met ':' als kandidaat
+      ('Trigger: een nieuw persoon wil lid worden')
+    - Verzamel subsequente bullets/regels tot aan de volgende veldmarkering
+    """
+    fields = ProcessFields()
+    raw: dict[str, list[str]] = {}
+
+    # 1) Subsecties met veld-titel
+    for child in section.children:
+        canonical = _match_field_alias(child.title)
+        if canonical:
+            raw.setdefault(canonical, []).extend(
+                p.strip() for p in child.paragraphs if p.strip()
+            )
+
+    # 2) Inline in eigen paragrafen: 'Veld: waarde'
+    paragraphs = list(section.paragraphs)
+    i = 0
+    while i < len(paragraphs):
+        p = paragraphs[i].strip()
+        if not p:
+            i += 1
+            continue
+        m = re.match(r"^(?P<field>[A-Za-z][\w\s/'-]{1,40}?)\s*[:.]\s+(?P<rest>.+)$", p)
+        if m:
+            canonical = _match_field_alias(m.group("field"))
+            if canonical:
+                rest = m.group("rest").strip()
+                if rest:
+                    raw.setdefault(canonical, []).append(rest)
+                # Verzamel volgende bullets tot volgend veld
+                extra, i = _extract_bullets_from_table(paragraphs, i + 1)
+                raw.setdefault(canonical, []).extend(extra)
+                continue
+        # Of alleen veldnaam op eigen regel, daarna bullets
+        canonical = _match_field_alias(p)
+        if canonical:
+            extra, i = _extract_bullets_from_table(paragraphs, i + 1)
+            raw.setdefault(canonical, []).extend(extra)
+            continue
+        i += 1
+
+    fields.raw_fields = raw
+
+    # Normaliseer velden naar de dataclass
+    fields.trigger = " ".join(raw.get("trigger", []))[:200]
+    fields.doel = " ".join(raw.get("doel", []))[:400]
+    fields.resultaat = " ".join(raw.get("resultaat", []))[:200]
+    fields.actoren = [a for a in raw.get("actoren", []) if a]
+    fields.stappen = [s for s in raw.get("stappen", []) if s]
+    fields.data_items = [d for d in raw.get("data", []) if d]
+    fields.systemen = [s for s in raw.get("systemen", []) if s]
+    fields.beslispunten = [b for b in raw.get("beslispunten", []) if b]
+    fields.regels = [r for r in raw.get("regels", []) if r]
+    return fields
+
+
+@dataclass
 class ExtractedEntities:
     entities: dict[str, set[str]] = field(default_factory=dict)  # name -> attributes
     mentions_by_section: dict[str, set[str]] = field(default_factory=dict)  # section_title -> entities
@@ -358,49 +496,72 @@ def _qname(ns: str, tag: str) -> str:
 
 
 def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
-    """Bouw Camunda-style .bpmn XML uit één sectie.
+    """Bouw Camunda-style .bpmn XML uit één sectie met SOLL-veld-extractie.
 
-    Output-struktuur (compatible met bpmn.io / Camunda Modeler):
-    - <bpmn:collaboration> met <bpmn:participant name="..." processRef=...>
-      zodat het diagram een proces-pool toont met de proces-naam erop
-    - <bpmn:process isExecutable="true"> met:
-        * startEvent + serviceTask(s) + endEvent
-        * Elke task heeft <bpmn:incoming>/<bpmn:outgoing> refs (Camunda-convention)
-        * sequenceFlows met Flow_-ids
-    - BPMN-DI plane verwijst naar de collaboration
-    - Elke shape krijgt <bpmndi:BPMNLabel /> voor correcte label-positionering
-    - Task-subtype serviceTask geeft het tandwiel-icon (matcht Camunda-stijl);
-      fallback naar userTask als verb 'raadpleeg'/'controleer'/etc. (niet
-      geautomatiseerd)
+    Gebruikt extract_process_fields() om:
+    - Trigger -> naam van startEvent
+    - Resultaat -> naam van endEvent
+    - Actoren/Rollen -> lanes in de pool (elke taak wordt toegewezen)
+    - Stappen -> tasks in volgorde (bulletlijst als source)
+    - Data-items + entities in tekst -> dataObjects
+    - Systemen -> dataStoreReferences met association
+    - Beslispunten -> exclusiveGateways met named outgoing flows
     """
     _register_namespaces()
+    fields = extract_process_fields(section)
 
     coll_id = _safe_id("Collaboration", "Collab")
     part_id = _safe_id("Participant", "P")
     proc_id = _safe_id("Process", "Proc")
     proc_name = section.title[:120]
 
-    # Verzamel task-zinnen (max 20)
-    sentences = []
-    for p in section.paragraphs:
-        sentences.extend(_split_sentences(p))
-    task_items = []
-    for s in sentences:
-        v = _find_task_verb(s)
-        if v:
-            nm = _extract_task_name(s, v)
-            task_items.append({"verb": v, "source": s, "name": nm})
-        if len(task_items) >= 20:
-            break
-    if not task_items:
-        task_items = [{"verb": "", "source": section.title,
-                       "name": _capitalize(section.title)[:80]}]
+    # Bepaal stappen: voorkeur voor expliciete 'Stappen'-bullets, anders
+    # detecteer zinnen met werkwoord zoals voorheen.
+    stap_sources = fields.stappen if fields.stappen else []
+    if not stap_sources:
+        sentences = []
+        for p in section.paragraphs:
+            sentences.extend(_split_sentences(p))
+        for s in sentences:
+            if _find_task_verb(s):
+                stap_sources.append(s)
+            if len(stap_sources) >= 20:
+                break
+    if not stap_sources:
+        stap_sources = [section.title]
 
-    # Entities
+    task_items = []
+    for src in stap_sources[:25]:
+        verb = _find_task_verb(src) or ""
+        if verb:
+            name = _extract_task_name(src, verb)
+        else:
+            name = _capitalize(src)[:100]
+        task_items.append({"verb": verb, "source": src, "name": name})
+
+    # Entities: combineer auto-discovery + expliciete data-items uit veld
     ex = extract_entities(ParsedDoc(
         source_file="(generated)", kind="docx", sections=[section]
     ))
-    entity_names = sorted(ex.entities.keys())
+    entity_names = set(ex.entities.keys())
+    for item in fields.data_items:
+        # item kan zijn "Lidmaatschap" of "Lid (met naam, bsn, adres)"
+        m = re.match(r"^([A-Z][\w\s-]*?)(?:\s*\(|\s*$)", item)
+        if m:
+            name = m.group(1).strip().capitalize()
+            if len(name) >= 3:
+                entity_names.add(name)
+                # Probeer attributen uit haakjes te halen
+                attr_match = re.search(r"\(([^)]+)\)", item)
+                if attr_match:
+                    attrs = [a.strip().lower() for a in
+                             re.split(r"[,;]", attr_match.group(1))
+                             if a.strip()]
+                    existing = ex.entities.setdefault(name, set())
+                    for a in attrs:
+                        if len(a) >= 2 and len(a) <= 30:
+                            existing.add(a)
+    entity_names = sorted(entity_names)
 
     # --- XML root + collaboration (pool wrapper)
     defs = ET.Element(_qname(BPMN_NS, "definitions"), {
@@ -422,20 +583,51 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
     doc_txt = ET.SubElement(proc, _qname(BPMN_NS, "documentation"))
     doc_txt.text = "SOURCE_DOC_SECTION_TEXT:\n" + section.full_text()[:4000]
 
-    # --- Bouw flow-graph: start -> task1 -> task2 -> ... -> end
-    # We bepalen eerst alle ids en flows, zodat we incoming/outgoing
-    # kunnen toevoegen per element.
+    # --- Lanes uit actoren
+    lane_ids: list[tuple[str, str]] = []   # [(lane_id, name)]
+    if fields.actoren:
+        laneset = ET.SubElement(proc, _qname(BPMN_NS, "laneSet"),
+                                {"id": _safe_id("LaneSet", "LS")})
+        for actor in fields.actoren[:6]:  # cap bij 6 lanes
+            lane_id = f"Lane_{uuid.uuid4().hex[:7]}"
+            lane_el = ET.SubElement(laneset, _qname(BPMN_NS, "lane"),
+                                    {"id": lane_id, "name": actor[:80]})
+            lane_ids.append((lane_id, actor, lane_el))
+
+    # --- Bouw flow-graph
+    # node_chain: start -> task1 -> task2 -> ... [optionele gateway] -> end
     start_id = "StartEvent_1"
     end_id = _safe_id("EndEvent", "EndEvent")
     task_ids = [f"Activity_{uuid.uuid4().hex[:7]}" for _ in task_items]
-    flow_ids = [f"Flow_{uuid.uuid4().hex[:7]}"
-                for _ in range(len(task_ids) + 1)]
-    # flow_ids[i] = flow van node i naar node i+1 in [start, task0, task1, ..., end]
 
-    node_chain = [start_id] + task_ids + [end_id]
+    # Gateways uit beslispunten: plak er 1 gateway tussen laatste task en end
+    gateway_id = None
+    gateway_name = ""
+    gateway_outcomes: list[str] = []  # extra naamlabels voor flows
+    if fields.beslispunten:
+        first_bp = fields.beslispunten[0]
+        # Patroon: "Conditie : ja / nee" of "Conditie -> ja / nee"
+        m = re.match(r"^(?P<cond>[^:?]+)\??\s*[:\-\u2192]\s*(?P<opts>.+)$", first_bp)
+        if m:
+            gateway_name = m.group("cond").strip()[:80]
+            gateway_outcomes = [o.strip()[:40] for o in
+                                re.split(r"\s*[/,]\s*", m.group("opts"))
+                                if o.strip()][:3]
+        else:
+            gateway_name = first_bp[:80]
+            gateway_outcomes = ["ja", "nee"]
+        gateway_id = f"Gateway_{uuid.uuid4().hex[:7]}"
+
+    # node_chain en flow_ids bepalen afhankelijk van gateway
+    if gateway_id:
+        node_chain = [start_id] + task_ids + [gateway_id, end_id]
+    else:
+        node_chain = [start_id] + task_ids + [end_id]
+    flow_ids = [f"Flow_{uuid.uuid4().hex[:7]}"
+                for _ in range(len(node_chain) - 1)]
 
     # DataObjects
-    data_obj_ids = []
+    data_obj_ids: list[tuple[str, str]] = []
     for ent in entity_names:
         do_id = f"DataObject_{uuid.uuid4().hex[:7]}"
         dor_id = f"DataObjectReference_{uuid.uuid4().hex[:7]}"
@@ -450,13 +642,29 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
                            + json.dumps(attrs, ensure_ascii=False))
         data_obj_ids.append((ent, dor_id))
 
-    # --- StartEvent (met outgoing ref)
+    # DataStores uit systemen
+    data_store_ids: list[tuple[str, str]] = []
+    for sysname in fields.systemen[:5]:
+        clean = re.split(r"[(,:]", sysname, 1)[0].strip()[:40]
+        if not clean:
+            continue
+        ds_id = f"DataStore_{uuid.uuid4().hex[:7]}"
+        dsr_id = f"DataStoreReference_{uuid.uuid4().hex[:7]}"
+        ET.SubElement(defs, _qname(BPMN_NS, "dataStore"),
+                      {"id": ds_id, "name": clean})
+        ET.SubElement(proc, _qname(BPMN_NS, "dataStoreReference"),
+                      {"id": dsr_id, "name": clean, "dataStoreRef": ds_id})
+        data_store_ids.append((clean, dsr_id))
+
+    # --- StartEvent (trigger-naam als beschikbaar)
+    se_name = fields.trigger or "Start"
     se = ET.SubElement(proc, _qname(BPMN_NS, "startEvent"),
-                       {"id": start_id})
+                       {"id": start_id, "name": se_name[:80]})
     ET.SubElement(se, _qname(BPMN_NS, "outgoing")).text = flow_ids[0]
 
-    # --- Tasks (serviceTask met incoming/outgoing refs)
+    # --- Tasks
     tasks_meta = []
+    lane_assign: dict[str, str] = {}
     for i, t in enumerate(task_items):
         tid = task_ids[i]
         task_el = ET.SubElement(proc, _qname(BPMN_NS, "serviceTask"),
@@ -465,24 +673,61 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
         d.text = "SOURCE_SENTENCE:" + t["source"][:500]
         ET.SubElement(task_el, _qname(BPMN_NS, "incoming")).text = flow_ids[i]
         ET.SubElement(task_el, _qname(BPMN_NS, "outgoing")).text = flow_ids[i + 1]
-        # DataInput-associations naar alle entities
+
+        # Koppel dataObjects (als er zijn)
         for ent, dor_id in data_obj_ids:
-            ia = ET.SubElement(task_el, _qname(BPMN_NS, "dataInputAssociation"),
-                               {"id": f"DataInputAssociation_{uuid.uuid4().hex[:6]}"})
-            ET.SubElement(ia, _qname(BPMN_NS, "sourceRef")).text = dor_id
+            if ent.lower() in t["source"].lower() or ent.lower() in t["name"].lower():
+                ia = ET.SubElement(task_el, _qname(BPMN_NS, "dataInputAssociation"),
+                                   {"id": f"DataInputAssociation_{uuid.uuid4().hex[:6]}"})
+                ET.SubElement(ia, _qname(BPMN_NS, "sourceRef")).text = dor_id
+
+        # Koppel dataStores als systeem in taaknaam/bron staat
+        for sysname, dsr_id in data_store_ids:
+            if sysname.lower() in t["source"].lower() or sysname.lower() in t["name"].lower():
+                ia = ET.SubElement(task_el, _qname(BPMN_NS, "dataInputAssociation"),
+                                   {"id": f"DataInputAssociation_{uuid.uuid4().hex[:6]}"})
+                ET.SubElement(ia, _qname(BPMN_NS, "sourceRef")).text = dsr_id
+
+        # Wijs toe aan een lane (round-robin over actoren)
+        if lane_ids:
+            lane_id, actor_name, lane_el = lane_ids[i % len(lane_ids)]
+            ET.SubElement(lane_el, _qname(BPMN_NS, "flowNodeRef")).text = tid
+            lane_assign[tid] = lane_id
+
         tasks_meta.append({"id": tid, "name": t["name"], "source": t["source"]})
 
-    # --- EndEvent (met incoming ref)
-    ee = ET.SubElement(proc, _qname(BPMN_NS, "endEvent"), {"id": end_id})
+    # --- Gateway (optioneel)
+    if gateway_id:
+        gw = ET.SubElement(proc, _qname(BPMN_NS, "exclusiveGateway"),
+                           {"id": gateway_id, "name": gateway_name})
+        # Incoming van laatste task
+        ET.SubElement(gw, _qname(BPMN_NS, "incoming")).text = flow_ids[-2]
+        ET.SubElement(gw, _qname(BPMN_NS, "outgoing")).text = flow_ids[-1]
+        if lane_ids:
+            first_lane_id, _, first_lane_el = lane_ids[0]
+            ET.SubElement(first_lane_el, _qname(BPMN_NS, "flowNodeRef")).text = gateway_id
+
+    # --- EndEvent
+    end_name = fields.resultaat or "Einde"
+    ee = ET.SubElement(proc, _qname(BPMN_NS, "endEvent"),
+                       {"id": end_id, "name": end_name[:80]})
     ET.SubElement(ee, _qname(BPMN_NS, "incoming")).text = flow_ids[-1]
 
-    # --- Sequence flows
+    # Voeg start/end ook aan eerste lane toe
+    if lane_ids:
+        first_lane_id, _, first_lane_el = lane_ids[0]
+        ET.SubElement(first_lane_el, _qname(BPMN_NS, "flowNodeRef")).text = start_id
+        ET.SubElement(first_lane_el, _qname(BPMN_NS, "flowNodeRef")).text = end_id
+
+    # --- Sequence flows (gateway-uitkomst als label indien mogelijk)
     for i, fid in enumerate(flow_ids):
-        ET.SubElement(proc, _qname(BPMN_NS, "sequenceFlow"), {
-            "id": fid,
-            "sourceRef": node_chain[i],
-            "targetRef": node_chain[i + 1],
-        })
+        src = node_chain[i]
+        tgt = node_chain[i + 1]
+        attrs = {"id": fid, "sourceRef": src, "targetRef": tgt}
+        # Flow uit gateway kan een label (uitkomst) krijgen
+        if gateway_id and src == gateway_id and gateway_outcomes:
+            attrs["name"] = gateway_outcomes[0]
+        ET.SubElement(proc, _qname(BPMN_NS, "sequenceFlow"), attrs)
 
     # --- DI-layout: pool rondom het hele proces, horizontaal
     di_root = ET.SubElement(defs, _qname(DI_NS, "BPMNDiagram"),
@@ -512,52 +757,99 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
             ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
                           {"x": str(wx), "y": str(wy)})
 
-    # Bereken afmetingen voor de pool
-    pool_margin_x = 160
-    step = 160
-    content_width = 36 + (len(task_items) * step) + 36 + 40  # start + tasks + end
-    pool_width = max(pool_margin_x + content_width + 60, 600)
-    pool_height = 252
+    # Bereken afmetingen
+    task_count = len(task_items)
+    gw_extra = 80 if gateway_id else 0
+    content_width = 36 + (task_count * 160) + gw_extra + 36 + 80
+    pool_width = max(300 + content_width, 700)
 
+    num_lanes = max(1, len(lane_ids))
+    lane_height = 100
+    pool_height = num_lanes * lane_height + 20
     pool_x = 160
     pool_y = 80
     # Pool-shape
     add_shape(part_id, pool_x, pool_y, pool_width, pool_height,
               is_horizontal=True)
 
-    # StartEvent
-    y_mid = pool_y + pool_height // 2 - 18
-    x = pool_x + 90
-    add_shape(start_id, x, y_mid, 36, 36, with_label=True)
-    start_right = (x + 36, y_mid + 18)
-    x += 36 + 54  # gap tussen start en eerste task
+    # Lane-shapes (kolommen naast elkaar = rijen in horizontale pool)
+    lane_y_by_id: dict[str, int] = {}
+    if lane_ids:
+        for idx, (lid, _name, _el) in enumerate(lane_ids):
+            ly = pool_y + 10 + idx * lane_height
+            add_shape(lid, pool_x + 30, ly, pool_width - 30, lane_height,
+                      is_horizontal=True)
+            lane_y_by_id[lid] = ly + lane_height // 2 - 18
 
-    # Tasks: 100x80
-    task_centers = []  # (left_center, right_center)
-    for tid in task_ids:
-        add_shape(tid, x, y_mid - 22, 100, 80)
-        task_centers.append(((x, y_mid + 18), (x + 100, y_mid + 18)))
-        x += 100 + 60  # gap tussen tasks
+    x0 = pool_x + 90
+    # StartEvent: in de eerste lane (of midden van pool zonder lanes)
+    if lane_ids:
+        first_lane_id = lane_ids[0][0]
+        y_start = lane_y_by_id[first_lane_id]
+    else:
+        y_start = pool_y + pool_height // 2 - 18
+    add_shape(start_id, x0, y_start, 36, 36)
+    x = x0 + 36 + 54
+
+    # Tasks (in lane-y bepaald door hun assignment)
+    task_positions = []  # per task: (x_left, y_top_of_shape)
+    for i, tid in enumerate(task_ids):
+        if lane_ids and tid in lane_assign:
+            y_t = lane_y_by_id[lane_assign[tid]] - 22
+        else:
+            y_t = pool_y + pool_height // 2 - 40
+        add_shape(tid, x, y_t, 100, 80)
+        task_positions.append((x, y_t))
+        x += 100 + 60
+
+    # Gateway (in eerste lane of middle)
+    gw_pos = None
+    if gateway_id:
+        y_gw = (lane_y_by_id[lane_ids[0][0]] - 5) if lane_ids \
+               else (pool_y + pool_height // 2 - 25)
+        add_shape(gateway_id, x, y_gw, 50, 50, is_marker=True)
+        gw_pos = (x, y_gw)
+        x += 50 + 60
 
     # EndEvent
-    x_end = x - 24  # compensate last gap
-    add_shape(end_id, x_end, y_mid, 36, 36)
-    end_left = (x_end, y_mid + 18)
+    y_end = lane_y_by_id[lane_ids[0][0]] if lane_ids \
+            else pool_y + pool_height // 2 - 18
+    x_end = x
+    add_shape(end_id, x_end, y_end, 36, 36)
 
     # Edges
+    def center_right(xp, yp, w, h): return (xp + w, yp + h // 2)
+    def center_left(xp, yp, w, h):  return (xp, yp + h // 2)
+
+    # Start (36x36) -> task0 (of gateway/end)
+    start_right = (x0 + 36, y_start + 18)
     prev_right = start_right
-    for i, (lc, rc) in enumerate(task_centers):
-        add_edge(flow_ids[i], [prev_right, lc])
-        prev_right = rc
-    add_edge(flow_ids[-1], [prev_right, end_left])
+    for i, (tx, ty) in enumerate(task_positions):
+        add_edge(flow_ids[i], [prev_right, (tx, ty + 40)])
+        prev_right = (tx + 100, ty + 40)
+
+    if gateway_id:
+        gx, gy = gw_pos
+        add_edge(flow_ids[-2], [prev_right, (gx, gy + 25)])
+        add_edge(flow_ids[-1], [(gx + 50, gy + 25), (x_end, y_end + 18)])
+    else:
+        add_edge(flow_ids[-1], [prev_right, (x_end, y_end + 18)])
 
     # DataObjects onder de pool
     if data_obj_ids:
-        dy = pool_y + pool_height + 30
+        dy = pool_y + pool_height + 40
         dx = pool_x + 20
         for ent, dor_id in data_obj_ids:
             add_shape(dor_id, dx, dy, 36, 50)
             dx += 120
+
+    # DataStores onder dataObjects
+    if data_store_ids:
+        dy = pool_y + pool_height + (120 if data_obj_ids else 40)
+        dx = pool_x + 20
+        for sysname, dsr_id in data_store_ids:
+            add_shape(dsr_id, dx, dy, 50, 50)
+            dx += 140
 
     buf = io.BytesIO()
     ET.ElementTree(defs).write(buf, xml_declaration=True, encoding="UTF-8")
@@ -634,6 +926,14 @@ def classify_section(section: "DocSection") -> tuple[str, str]:
 
     if PROCESS_NUMBER_RE.match(section.title) or STAP_RE.match(section.title):
         return ("process", f"Titel matcht proces-nummer-patroon ({section.title!r}).")
+
+    # SOLL-veldnamen zijn GEEN eigen proces — ze zijn velden binnen een
+    # parent-proces (Trigger/Doel/Actoren/Stappen/Gebruikte data/...).
+    field_match = _match_field_alias(section.title)
+    if field_match:
+        return ("field",
+                f"Titel is een SOLL-veldnaam ({field_match!r}) — hoort bij "
+                "parent-proces, geen eigen BPMN.")
 
     # Metadata-hints krijgen VOORRANG boven proces-hints, want zinnen als
     # 'Trigger van het proces' matchen beide: 'trigger' is specifieker dan
@@ -720,15 +1020,15 @@ def process_document(
             "child_count": len(sec.children),
         })
 
-    # Bepaal welke secties paraplu's zijn voor subprocessen: als een
-    # sectie depth=0 een 'process' is EN er zit minstens 1 'process'
-    # subsectie onder, dan skippen we de paraplu (om dubbele BPMNs
-    # te voorkomen). Subsecties blijven wel eigen BPMN.
+    # Bepaal welke secties paraplu's zijn voor subprocessen. Een sectie
+    # is een 'umbrella' als ze zelf 'process' is EN er minstens 1 directe
+    # subsectie is die OOK 'process' is (niet een 'field'-subsectie).
+    # Als alle subsecties 'field' zijn, is de parent een gewoon proces
+    # met SOLL-velden als subsecties.
     umbrella_indices: set[int] = set()
     for i, (depth, sec) in enumerate(all_sections):
         if classified[i]["classification"] != "process":
             continue
-        # Kijk naar alle volgende secties die dieper genest zijn
         has_process_subsection = False
         j = i + 1
         while j < len(all_sections) and all_sections[j][0] > depth:
