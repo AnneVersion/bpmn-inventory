@@ -171,9 +171,68 @@ a:hover { text-decoration: underline; }
     gap: 14px;
     margin-top: 14px;
 }
+.project-card-wrap {
+    position: relative;
+}
+.project-card-wrap .proj-check {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 3;
+    transform: scale(1.15);
+    cursor: pointer;
+}
+.project-card-wrap .inline-delete-form {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 3;
+    margin: 0;
+}
+.project-card-wrap .inline-del-btn {
+    width: 26px; height: 26px;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(185, 28, 28, .1);
+    color: var(--danger);
+    font-size: 1.1rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    transition: background .12s;
+    padding: 0;
+}
+.project-card-wrap .inline-del-btn:hover {
+    background: var(--danger);
+    color: #fff;
+}
+
+.bulk-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: #fef1f1;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: .9rem;
+}
+.bulk-tools .btn-danger {
+    padding: 5px 14px;
+    font-size: .85rem;
+    margin: 0;
+}
+
+.order-table .btn-danger {
+    padding: 3px 10px;
+    font-size: 1rem;
+    line-height: 1;
+    min-width: 28px;
+}
+
 .project-card {
     display: block;
-    padding: 16px 18px;
+    padding: 16px 18px 16px 40px;
     background: #fafbff;
     border: 1px solid #c7d2fe;
     border-radius: var(--radius);

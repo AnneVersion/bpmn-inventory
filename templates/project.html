@@ -114,9 +114,20 @@
     {% endfor %}
     {% set order = project.bpmn_order %}
     {% set total = order|length %}
+    <div class="bulk-tools" id="bpmn-bulk-tools" style="display:none; margin-top:8px;">
+        <span id="bpmn-bulk-count">0 geselecteerd</span>
+        <form method="post" id="bpmn-bulk-form"
+              action="{{ url_for('project_bulk_remove_bpmns', pid=project.id) }}"
+              style="display:inline;">
+            <button type="submit" class="btn-danger">Verwijder geselecteerde BPMNs</button>
+        </form>
+    </div>
     <table class="data-table order-table" style="margin-top:14px;">
         <thead>
             <tr>
+              <th style="width:40px;">
+                <input type="checkbox" id="bpmn-select-all" title="Alles selecteren">
+              </th>
               <th style="width:50px;">#</th>
               <th>Bestand</th>
               <th>Volgorde-reden</th>
@@ -128,6 +139,10 @@
         {% for f in order %}
         {% set idx = loop.index0 %}
         <tr>
+            <td>
+                <input type="checkbox" class="bpmn-check" value="{{ f }}"
+                       name="targets" form="bpmn-bulk-form">
+            </td>
             <td><strong>{{ loop.index }}</strong></td>
             <td><code>{{ f }}</code></td>
             <td>
@@ -163,10 +178,9 @@
             <td>
                 <form method="post"
                       action="{{ url_for('project_remove_bpmn', pid=project.id) }}"
-                      style="display:inline;"
-                      onsubmit="return confirm('Bestand {{ f }} en alle versies verwijderen uit dit project?');">
+                      style="display:inline;">
                     <input type="hidden" name="target" value="{{ f }}">
-                    <button type="submit" class="btn-danger">Verwijder</button>
+                    <button type="submit" class="btn-danger" title="Direct verwijderen">×</button>
                 </form>
             </td>
         </tr>
@@ -174,6 +188,10 @@
         {% for f in project.bpmn_files %}
           {% if f not in order %}
           <tr>
+            <td>
+                <input type="checkbox" class="bpmn-check" value="{{ f }}"
+                       name="targets" form="bpmn-bulk-form">
+            </td>
             <td>-</td>
             <td><code>{{ f }}</code> <small>(niet in volgorde)</small></td>
             <td></td><td></td>
@@ -182,7 +200,7 @@
                       action="{{ url_for('project_remove_bpmn', pid=project.id) }}"
                       style="display:inline;">
                     <input type="hidden" name="target" value="{{ f }}">
-                    <button type="submit" class="btn-danger">Verwijder</button>
+                    <button type="submit" class="btn-danger" title="Direct verwijderen">×</button>
                 </form>
             </td>
           </tr>
@@ -190,6 +208,25 @@
         {% endfor %}
         </tbody>
     </table>
+
+    <script>
+    (function () {
+        var checks = document.querySelectorAll('.bpmn-check');
+        var all = document.getElementById('bpmn-select-all');
+        var tools = document.getElementById('bpmn-bulk-tools');
+        var count = document.getElementById('bpmn-bulk-count');
+        function update() {
+            var n = Array.from(checks).filter(c => c.checked).length;
+            tools.style.display = n > 0 ? 'inline-flex' : 'none';
+            count.textContent = n + ' geselecteerd';
+        }
+        checks.forEach(c => c.addEventListener('change', update));
+        if (all) all.addEventListener('change', function () {
+            checks.forEach(c => { c.checked = all.checked; });
+            update();
+        });
+    })();
+    </script>
     {% endif %}
 </section>
 

@@ -12,23 +12,53 @@
 
 {% if projects %}
 <section class="projects-section">
-    <h2>Projecten</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h2 style="margin:0;">Projecten</h2>
+        <div class="bulk-tools" id="projects-bulk-tools" style="display:none;">
+            <span id="bulk-count">0 geselecteerd</span>
+            <form method="post" action="{{ url_for('projects_bulk_delete') }}"
+                  id="projects-bulk-form" style="display:inline;">
+                <button type="submit" class="btn-danger">Verwijder geselecteerde</button>
+            </form>
+        </div>
+    </div>
     <p class="lead" style="font-size:.92rem;">
-        Groepeer alle BPMNs van één bedrijf in één project om een cumulatief
-        datamodel te krijgen. Oudere BPMN-versies blijven bewaard.
+        Klik een projectkaart om ermee te werken. Met <strong>×</strong> verwijder je
+        een project direct (geen bevestiging). Checkboxes voor bulk-acties.
     </p>
     <div class="projects-grid">
         {% for p in projects %}
-        <a class="project-card" href="{{ url_for('project_detail', pid=p.id) }}">
-            <h3>{{ p.name }}</h3>
-            <div class="project-stats">
-                <span><strong>{{ p.bpmn_count }}</strong> BPMN{% if p.bpmn_count != 1 %}s{% endif %}</span>
-            </div>
-            <small>sinds {{ p.created_at.split('T')[0] }}</small>
-        </a>
+        <div class="project-card-wrap">
+            <input type="checkbox" class="proj-check" value="{{ p.id }}" form="projects-bulk-form" name="pids">
+            <form method="post" class="inline-delete-form"
+                  action="{{ url_for('project_delete', pid=p.id) }}">
+                <button type="submit" class="inline-del-btn" title="Verwijder dit project">×</button>
+            </form>
+            <a class="project-card" href="{{ url_for('project_detail', pid=p.id) }}">
+                <h3>{{ p.name }}</h3>
+                <div class="project-stats">
+                    <span><strong>{{ p.bpmn_count }}</strong> BPMN{% if p.bpmn_count != 1 %}s{% endif %}</span>
+                </div>
+                <small>sinds {{ p.created_at.split('T')[0] }}</small>
+            </a>
+        </div>
         {% endfor %}
     </div>
 </section>
+
+<script>
+(function () {
+    var checks = document.querySelectorAll('.proj-check');
+    var tools = document.getElementById('projects-bulk-tools');
+    var count = document.getElementById('bulk-count');
+    function update() {
+        var n = Array.from(checks).filter(c => c.checked).length;
+        tools.style.display = n > 0 ? 'inline-flex' : 'none';
+        count.textContent = n + ' geselecteerd';
+    }
+    checks.forEach(c => c.addEventListener('change', update));
+})();
+</script>
 {% endif %}
 
 <section class="new-project-section">

@@ -790,6 +790,47 @@ def project_delete(pid: str):
     return redirect(url_for("index"))
 
 
+@app.route("/projects/bulk-delete", methods=["POST"])
+def projects_bulk_delete():
+    """Verwijder een lijst van projecten in 1 keer."""
+    pids = request.form.getlist("pids")
+    count = 0
+    for pid in pids:
+        if bpmn_project.is_valid_pid(pid):
+            if bpmn_project.delete(ROOT, pid):
+                count += 1
+    return redirect(url_for("index"))
+
+
+@app.route("/project/<pid>/bulk-remove-bpmns", methods=["POST"])
+def project_bulk_remove_bpmns(pid: str):
+    """Verwijder meerdere BPMNs tegelijk uit een project."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    import shutil
+    targets = request.form.getlist("targets")
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    for t in targets:
+        safe = secure_filename(t)
+        if not safe:
+            continue
+        p = data_dir / safe
+        if p.exists():
+            p.unlink()
+        base = Path(safe).stem
+        versions_dir = pdir / "versions" / base
+        if versions_dir.exists():
+            shutil.rmtree(versions_dir, ignore_errors=True)
+    meta["bpmn_order"] = [n for n in meta.get("bpmn_order", [])
+                          if n not in {secure_filename(t) for t in targets}]
+    bpmn_project.save(ROOT, meta)
+    return redirect(url_for("project_detail", pid=pid))
+
+
 @app.route("/project/<pid>/remove-bpmn", methods=["POST"])
 def project_remove_bpmn(pid: str):
     if not bpmn_project.is_valid_pid(pid):
