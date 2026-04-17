@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Procesregister - {{ project.name }}{% endblock %}
+
+{% block content %}
+<section>
+    <a href="{{ url_for('project_detail', pid=project.id) }}" class="btn-secondary">&larr; Naar project</a>
+    <h1>📋 Procesregister van {{ project.name }}</h1>
+    <p class="lead">
+        Voer hier alle processen in die je voor dit project <strong>verwacht</strong>.
+        De tool matcht ze tegen de geüploade BPMNs en laat zien welke nog
+        ontbreken of extra zijn.
+    </p>
+</section>
+
+<section>
+    <h2>Verwachte processen invoeren</h2>
+    <form method="post" action="{{ url_for('project_register', pid=project.id) }}">
+        <textarea name="expected_processes" rows="12" class="register-textarea"
+                  placeholder="Eén procesnaam per regel, bv.:&#10;L1 Lidmaatschap beheren&#10;L2 P01 Lid inschrijven&#10;L2 P02 Lidmaatschap wijzigen&#10;L2 P03 Lid uitschrijven&#10;L1 Contributie&#10;L2 P01 Contributie vaststellen&#10;...">{{ expected|join('\n') }}</textarea>
+        <button type="submit" class="btn-primary">Opslaan</button>
+    </form>
+</section>
+
+{% if expected %}
+<section style="margin-top:24px;">
+    <h2>Status per verwacht proces ({{ matched|selectattr('status','equalto','present')|list|length }} / {{ expected|length }} aanwezig)</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Verwacht proces</th>
+                <th style="width:100px;">Status</th>
+                <th>Matched BPMN</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in matched %}
+            <tr class="reg-row reg-{{ m.status }}">
+                <td>{{ m.expected }}</td>
+                <td>
+                    {% if m.status == 'present' %}
+                        <span class="sec-badge sec-process">✓ AANWEZIG</span>
+                    {% else %}
+                        <span class="sec-badge sec-metadata">✗ ONTBREEKT</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if m.bpmn_file %}
+                        <code>{{ m.bpmn_file }}</code>
+                    {% else %}
+                        <em>Geen BPMN gevonden met deze naam</em>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+{% if unexpected %}
+<section style="margin-top:24px;">
+    <h2>BPMNs die niet op het register staan ({{ unexpected|length }})</h2>
+    <p class="viewer-hint">
+        Deze BPMNs zitten wel in het project maar komen niet voor in de
+        verwachtingslijst. Mogelijk zijn dit extra / ongeplande processen,
+        of de naam-matching klopt niet (te kort, typo).
+    </p>
+    <ul class="compact-list">
+        {% for f in unexpected %}
+        <li><code>{{ f }}</code></li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

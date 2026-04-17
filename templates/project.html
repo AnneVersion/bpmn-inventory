@@ -88,6 +88,8 @@
         </form>
         <a href="{{ url_for('project_results', pid=project.id) }}"
            class="btn-secondary">Resultaten bekijken</a>
+        <a href="{{ url_for('project_register', pid=project.id) }}"
+           class="btn-secondary">📋 Procesregister</a>
         <form method="post"
               action="{{ url_for('project_auto_order', pid=project.id) }}"
               style="display:inline;"

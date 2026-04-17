@@ -369,6 +369,19 @@ a:hover { text-decoration: underline; }
 }
 .subproc-indicator:empty { display: none; }
 
+.register-textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: "Consolas", ui-monospace, monospace;
+    font-size: .9rem;
+    line-height: 1.5;
+    margin-bottom: 10px;
+}
+.reg-row.reg-missing { background: #fef1f1; }
+.reg-row.reg-present td:first-child { font-weight: 600; }
+
 .sec-class-table { margin-top: 10px; }
 .sec-class-table td small { color: var(--muted); }
 

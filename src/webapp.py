@@ -820,6 +820,69 @@ def projects_bulk_delete():
     return redirect(url_for("index"))
 
 
+@app.route("/project/<pid>/register", methods=["GET", "POST"])
+def project_register(pid: str):
+    """Procesregister: lijst van verwachte processen voor dit project.
+
+    GET  -> pagina met bestaande lijst + editor
+    POST -> sla complete lijst op (1 naam per regel in textarea)
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+
+    if request.method == "POST":
+        raw = request.form.get("expected_processes", "")
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        meta["expected_processes"] = lines
+        bpmn_project.save(ROOT, meta)
+        return redirect(url_for("project_register", pid=pid))
+
+    expected = meta.get("expected_processes", [])
+    bpmn_files = meta.get("bpmn_files", [])
+
+    # Match expected processes tegen aanwezige BPMN-filenames
+    # Simpele fuzzy-match: case-insensitive substring beide kanten
+    def _slug_for_match(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+    by_slug_expected = {_slug_for_match(e): e for e in expected}
+    bpmn_slugs = {_slug_for_match(Path(f).stem): f for f in bpmn_files}
+
+    matched: list[dict] = []
+    for exp in expected:
+        sl = _slug_for_match(exp)
+        found_file = None
+        for bpmn_sl, filename in bpmn_slugs.items():
+            if sl and (sl in bpmn_sl or bpmn_sl in sl) and len(sl) >= 4:
+                found_file = filename
+                break
+        matched.append({
+            "expected": exp,
+            "bpmn_file": found_file,
+            "status": "present" if found_file else "missing",
+        })
+
+    # Ook: welke BPMN-bestanden hebben geen match in de verwachtingslijst?
+    unexpected = []
+    for filename in bpmn_files:
+        sl = _slug_for_match(Path(filename).stem)
+        is_expected = any(
+            (_slug_for_match(e) and
+             (sl in _slug_for_match(e) or _slug_for_match(e) in sl)
+             and len(_slug_for_match(e)) >= 4)
+            for e in expected
+        )
+        if not is_expected:
+            unexpected.append(filename)
+
+    return render_template("register.html",
+                           project=meta, expected=expected,
+                           matched=matched, unexpected=unexpected)
+
+
 @app.route("/project/<pid>/bulk-remove-bpmns", methods=["POST"])
 def project_bulk_remove_bpmns(pid: str):
     """Verwijder meerdere BPMNs tegelijk uit een project."""
