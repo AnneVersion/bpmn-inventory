@@ -63,11 +63,26 @@ PROCESS_HEADING_HINTS = [
     "stappenplan", "uitvoering",
 ]
 
-# Subproces-markers: P1, P2, P3 / L2 P01 / Stap 1 / etc.
+# Subproces-markers: 'P1', 'P02', 'L2 P01', '3 Sub proces P01',
+# '3 Subproces P01 - Inschrijven lid', etc.
 PROCESS_NUMBER_RE = re.compile(
-    r"^\s*(?:L\d+\s+)?(?:sub)?(?:proces\s*)?p\d+\b",
+    r"""
+    ^\s*
+    (?:\d+(?:\.\d+)?\s+)?          # Optionele hoofdnummer (3 / 3.1)
+    (?:L\d+\s+)?                   # Optioneel niveau (L2)
+    (?:sub[\s-]*)?                 # Optioneel 'sub' prefix
+    (?:proces[s]?\s*)?             # Optioneel 'proces' of 'process'
+    [Pp]\d+\b                      # Vereiste P-nummer
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Ook: 'Subproces' of 'Hoofdproces' zonder nummer kan een proces aanduiden
+SUBPROC_WORD_RE = re.compile(
+    r"^\s*(?:hoofd|sub)\s*proces[s]?\b",
     re.IGNORECASE,
 )
+
 STAP_RE = re.compile(r"^\s*stap\s*\d+\b", re.IGNORECASE)
 
 # Headings die nooit een proces zijn (metadata)
@@ -927,6 +942,10 @@ def classify_section(section: "DocSection") -> tuple[str, str]:
     if PROCESS_NUMBER_RE.match(section.title) or STAP_RE.match(section.title):
         return ("process", f"Titel matcht proces-nummer-patroon ({section.title!r}).")
 
+    if SUBPROC_WORD_RE.match(section.title):
+        return ("process",
+                f"Titel begint met 'Subproces' / 'Hoofdproces' ({section.title!r}).")
+
     # SOLL-veldnamen zijn GEEN eigen proces — ze zijn velden binnen een
     # parent-proces (Trigger/Doel/Actoren/Stappen/Gebruikte data/...).
     field_match = _match_field_alias(section.title)
@@ -973,6 +992,149 @@ def _walk_all_sections(sections: list[DocSection]) -> list[tuple[int, DocSection
     for s in sections:
         walk(s, 0)
     return out
+
+
+def umbrella_to_l1_bpmn(section: DocSection,
+                        subprocess_names: list[tuple[str, str]]) -> bytes:
+    """Bouw een L1-overzichts-BPMN uit een umbrella-sectie.
+
+    `subprocess_names` = [(subproc_title, subproc_bpmn_filename), ...] in de
+    volgorde zoals ze in het document staan.
+
+    Output: 1 BPMN met <bpmn:callActivity>'s (één per subproc), sequentieel
+    verbonden met start → call1 → call2 → ... → end. De callActivity krijgt
+    calledElement verwijzend naar de subprocess-id conventie (de bpmn-js
+    viewer toont hem als een task met "plus"-icon).
+    """
+    _register_namespaces()
+    coll_id = _safe_id("Collaboration", "Collab")
+    part_id = _safe_id("Participant", "P")
+    proc_id = _safe_id("L1", "Proc")
+    proc_name = section.title[:120]
+
+    defs = ET.Element(_qname(BPMN_NS, "definitions"), {
+        "id": _safe_id("Definitions", "D"),
+        "targetNamespace": "http://bpmn.io/schema/bpmn",
+        "exporter": "BPMN Inventory doc-generator (L1-overview)",
+    })
+    collab = ET.SubElement(defs, _qname(BPMN_NS, "collaboration"),
+                           {"id": coll_id})
+    ET.SubElement(collab, _qname(BPMN_NS, "participant"), {
+        "id": part_id, "name": proc_name + " [L1 overzicht]",
+        "processRef": proc_id,
+    })
+    proc = ET.SubElement(defs, _qname(BPMN_NS, "process"), {
+        "id": proc_id, "name": proc_name, "isExecutable": "false",
+    })
+    doc_el = ET.SubElement(proc, _qname(BPMN_NS, "documentation"))
+    doc_el.text = ("L1_OVERVIEW:" + section.title +
+                   "\nSubprocessen:\n" +
+                   "\n".join(f"- {t} ({f})" for t, f in subprocess_names))
+
+    start_id = "StartEvent_1"
+    end_id = _safe_id("EndEvent", "EndEvent")
+    call_ids = [f"CallActivity_{uuid.uuid4().hex[:7]}"
+                for _ in subprocess_names]
+    flow_ids = [f"Flow_{uuid.uuid4().hex[:7]}"
+                for _ in range(len(call_ids) + 1)]
+    node_chain = [start_id] + call_ids + [end_id]
+
+    se = ET.SubElement(proc, _qname(BPMN_NS, "startEvent"),
+                       {"id": start_id, "name": "Start L1"})
+    ET.SubElement(se, _qname(BPMN_NS, "outgoing")).text = flow_ids[0]
+
+    for i, (title, filename) in enumerate(subprocess_names):
+        cid = call_ids[i]
+        # calledElement-id-conventie: 1 bpmn per proces; we gebruiken de
+        # subproc-naam als calledElement-stub (viewer toont 'im still a task')
+        calledRef = _safe_id(title, "CalledProc")
+        ca = ET.SubElement(proc, _qname(BPMN_NS, "callActivity"), {
+            "id": cid, "name": title[:100], "calledElement": calledRef,
+        })
+        d = ET.SubElement(ca, _qname(BPMN_NS, "documentation"))
+        d.text = f"SUBPROCESS_REF_FILE:{filename}"
+        ET.SubElement(ca, _qname(BPMN_NS, "incoming")).text = flow_ids[i]
+        ET.SubElement(ca, _qname(BPMN_NS, "outgoing")).text = flow_ids[i + 1]
+
+    ee = ET.SubElement(proc, _qname(BPMN_NS, "endEvent"),
+                       {"id": end_id, "name": "Einde L1"})
+    ET.SubElement(ee, _qname(BPMN_NS, "incoming")).text = flow_ids[-1]
+
+    for i, fid in enumerate(flow_ids):
+        ET.SubElement(proc, _qname(BPMN_NS, "sequenceFlow"),
+                      {"id": fid,
+                       "sourceRef": node_chain[i],
+                       "targetRef": node_chain[i + 1]})
+
+    # DI-layout
+    di_root = ET.SubElement(defs, _qname(DI_NS, "BPMNDiagram"),
+                            {"id": "BPMNDiagram_1"})
+    plane = ET.SubElement(di_root, _qname(DI_NS, "BPMNPlane"),
+                          {"id": "BPMNPlane_1", "bpmnElement": coll_id})
+    pool_w = 300 + len(call_ids) * 180 + 100
+    pool_h = 180
+    pool_x, pool_y = 160, 80
+    # Pool
+    sh = ET.SubElement(plane, _qname(DI_NS, "BPMNShape"),
+                       {"id": f"{part_id}_di", "bpmnElement": part_id,
+                        "isHorizontal": "true"})
+    ET.SubElement(sh, _qname(DC_NS, "Bounds"),
+                  {"x": str(pool_x), "y": str(pool_y),
+                   "width": str(pool_w), "height": str(pool_h)})
+    ET.SubElement(sh, _qname(DI_NS, "BPMNLabel"))
+
+    y_mid = pool_y + pool_h // 2 - 18
+    x = pool_x + 90
+    # Start
+    sh = ET.SubElement(plane, _qname(DI_NS, "BPMNShape"),
+                       {"id": f"{start_id}_di", "bpmnElement": start_id})
+    ET.SubElement(sh, _qname(DC_NS, "Bounds"),
+                  {"x": str(x), "y": str(y_mid), "width": "36", "height": "36"})
+    ET.SubElement(sh, _qname(DI_NS, "BPMNLabel"))
+    prev_right = (x + 36, y_mid + 18)
+    x += 90
+    # CallActivities
+    for cid in call_ids:
+        sh = ET.SubElement(plane, _qname(DI_NS, "BPMNShape"),
+                           {"id": f"{cid}_di", "bpmnElement": cid})
+        ET.SubElement(sh, _qname(DC_NS, "Bounds"),
+                      {"x": str(x), "y": str(y_mid - 22),
+                       "width": "120", "height": "80"})
+        ET.SubElement(sh, _qname(DI_NS, "BPMNLabel"))
+        x += 180
+    # End
+    sh = ET.SubElement(plane, _qname(DI_NS, "BPMNShape"),
+                       {"id": f"{end_id}_di", "bpmnElement": end_id})
+    ET.SubElement(sh, _qname(DC_NS, "Bounds"),
+                  {"x": str(x), "y": str(y_mid), "width": "36", "height": "36"})
+    ET.SubElement(sh, _qname(DI_NS, "BPMNLabel"))
+
+    # Edges
+    x_iter = pool_x + 90 + 36
+    prev = (x_iter, y_mid + 18)
+    for i, cid in enumerate(call_ids):
+        cx = pool_x + 90 + 36 + 54 + i * 180
+        # edge to this call
+        e = ET.SubElement(plane, _qname(DI_NS, "BPMNEdge"),
+                          {"id": f"{flow_ids[i]}_di",
+                           "bpmnElement": flow_ids[i]})
+        ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
+                      {"x": str(prev[0]), "y": str(prev[1])})
+        ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
+                      {"x": str(cx), "y": str(y_mid + 18)})
+        prev = (cx + 120, y_mid + 18)
+    # Edge to end
+    e = ET.SubElement(plane, _qname(DI_NS, "BPMNEdge"),
+                      {"id": f"{flow_ids[-1]}_di",
+                       "bpmnElement": flow_ids[-1]})
+    ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
+                  {"x": str(prev[0]), "y": str(prev[1])})
+    ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
+                  {"x": str(x), "y": str(y_mid + 18)})
+
+    buf = io.BytesIO()
+    ET.ElementTree(defs).write(buf, xml_declaration=True, encoding="UTF-8")
+    return buf.getvalue()
 
 
 def process_document(

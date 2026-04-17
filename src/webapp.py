@@ -41,6 +41,7 @@ import bpmn_erd                                          # noqa: E402
 import bpmn_project                                      # noqa: E402
 import bpmn_docs                                         # noqa: E402
 import bpmn_anchors                                      # noqa: E402
+import bpmn_process_map                                  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -284,9 +285,15 @@ def _regenerate_project_summary(pid: str) -> dict:
 
     # GLOBALE ankerobjecten-repository bijwerken: zorg dat de tool
     # cross-project weet welke entities centraal zijn in de organisatie.
+    process_map_mermaid = ""
+    process_relations: list[dict] = []
     try:
         entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
         bpmn_anchors.ingest_from_model(ROOT, entities_obj, project_id=pid)
+        # Bouw ook de proces-relatie-kaart: welke processen hangen samen
+        # via gedeelde entities?
+        process_map_mermaid, process_relations = \
+            bpmn_process_map.build_process_map(entities_obj)
     except Exception:
         pass  # anchors-store is hulpdata, mag nooit de analyse blokkeren
 
@@ -340,6 +347,8 @@ def _regenerate_project_summary(pid: str) -> dict:
         "inventory": [asdict(r) for r in model.inventory],
         "mermaid_erd": erd["mermaid"],
         "erd": erd["summary"],
+        "process_map_mermaid": locals().get("process_map_mermaid", ""),
+        "process_relations": locals().get("process_relations", []),
         "findings": findings,
         "findings_summary": findings_summary,
         "report_per_bpmn": [{
@@ -1054,6 +1063,8 @@ def run_pipeline():
         "inventory": [asdict(r) for r in model.inventory],
         "mermaid_erd": erd["mermaid"],
         "erd": erd["summary"],
+        "process_map_mermaid": locals().get("process_map_mermaid", ""),
+        "process_relations": locals().get("process_relations", []),
         "findings": findings,
         "findings_summary": findings_summary,
         # Rapport-secties per BPMN (voor inline HTML rapport)
@@ -1151,6 +1162,16 @@ def _regenerate_session_summary(sid: str) -> dict:
     findings = findings + erd["cross_findings"]
     findings_summary = summarize(findings)
 
+    # Proces-relatie-kaart
+    process_map_mermaid = ""
+    process_relations: list[dict] = []
+    try:
+        entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+        process_map_mermaid, process_relations = \
+            bpmn_process_map.build_process_map(entities_obj)
+    except Exception:
+        pass
+
     saved_files = [p.name for p in sorted(data_dir.glob("*.bpmn"))] + \
                   [p.name for p in sorted(data_dir.glob("*.xml"))]
 
@@ -1194,6 +1215,8 @@ def _regenerate_session_summary(sid: str) -> dict:
         "inventory": [asdict(r) for r in model.inventory],
         "mermaid_erd": erd["mermaid"],
         "erd": erd["summary"],
+        "process_map_mermaid": locals().get("process_map_mermaid", ""),
+        "process_relations": locals().get("process_relations", []),
         "findings": findings,
         "findings_summary": findings_summary,
         "report_per_bpmn": [{

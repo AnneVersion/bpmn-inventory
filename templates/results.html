@@ -24,6 +24,10 @@
     <nav class="tab-nav" role="tablist">
         <button class="tab-btn active" data-tab="bpmn" type="button">BPMN diagram</button>
         <button class="tab-btn" data-tab="erd" type="button">ERD</button>
+        <button class="tab-btn" data-tab="procmap" type="button">
+            Processenkaart
+            {% if summary.process_relations %}<span class="tab-count">{{ summary.process_relations|length }}</span>{% endif %}
+        </button>
         <button class="tab-btn" data-tab="review" type="button">
             Kwaliteitscheck
             {% if summary.findings_summary.total %}
@@ -269,6 +273,50 @@
                     een entiteitsdiagram te genereren.
                 </p>
             </div>
+        {% endif %}
+    </section>
+
+    <!-- ================== TAB: PROCMAP ================== -->
+    <section class="tab-panel" data-panel="procmap">
+        <h3>🔗 Processenkaart</h3>
+        <p class="lead">
+            Welke processen leveren data aan welke andere processen?
+            Een pijl <strong>A → B</strong> betekent: proces A creëert of wijzigt
+            een entity die proces B leest. De labels tonen via welke entiteit(en)
+            de koppeling loopt.
+        </p>
+        {% if summary.process_map_mermaid %}
+        <div class="mermaid-wrap">
+            <pre class="mermaid" id="mermaid-procmap">{{ summary.process_map_mermaid }}</pre>
+        </div>
+
+        <h3>Relaties ({{ summary.process_relations|length }})</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Van proces</th>
+                    <th>Naar proces</th>
+                    <th>Via entiteit(en)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in summary.process_relations %}
+                <tr>
+                    <td><strong>{{ r.from }}</strong></td>
+                    <td><strong>{{ r.to }}</strong></td>
+                    <td>
+                        {% for e in r.via_entities %}<span class="chip">{{ e }}</span>{% endfor %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">
+            <h3>Nog geen proces-relaties gedetecteerd</h3>
+            <p>Relaties worden afgeleid uit gedeelde entities. Voeg meer
+            processen met dataObjects toe, of draai Analyseer opnieuw.</p>
+        </div>
         {% endif %}
     </section>
 
@@ -615,6 +663,7 @@
                 p.classList.toggle('active', p.getAttribute('data-panel') === name);
             });
             if (name === 'erd') renderMermaid();
+            if (name === 'procmap') renderMermaidProcmap();
             if (name === 'bpmn') setTimeout(fitBpmn, 50);
         });
     });
@@ -671,6 +720,16 @@
             .then(function () { mermaidInlineRendered = true; })
             .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
     }
+    var mermaidProcmapRendered = false;
+    function renderMermaidProcmap() {
+        if (mermaidProcmapRendered) return;
+        var el = document.getElementById('mermaid-procmap');
+        if (!el || !window.__mermaid) return;
+        window.__mermaid.run({ nodes: [el] })
+            .then(function () { mermaidProcmapRendered = true; })
+            .catch(function (e) { el.textContent = 'Mermaid-fout: ' + e.message; });
+    }
+
     var mermaidUnderOriginalRendered = false;
     function renderMermaidUnderOriginal() {
         if (mermaidUnderOriginalRendered) return;
