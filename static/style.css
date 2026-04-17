@@ -349,6 +349,26 @@ a:hover { text-decoration: underline; }
 .sec-badge.sec-skipped_nested { background: #fde4cf; color: #9a3412; }
 .sec-badge.sec-umbrella    { background: #e0e7ff; color: #3730a3; }
 
+.subproc-badge {
+    display: inline-block;
+    background: #e0e7ff;
+    color: #3730a3;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: .78rem;
+    margin-top: 4px;
+}
+.subproc-indicator {
+    display: inline-block;
+    background: #eef2fb;
+    color: #3730a3;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: .82rem;
+    margin-left: 10px;
+}
+.subproc-indicator:empty { display: none; }
+
 .sec-class-table { margin-top: 10px; }
 .sec-class-table td small { color: var(--muted); }
 

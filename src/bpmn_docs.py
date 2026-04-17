@@ -709,6 +709,16 @@ def process_document(
             info["classification"] = "skipped_nested"
             continue
 
+        # Vind de parent-proces titel (zoekt achteruit naar depth < mijn depth
+        # die ook een 'process' of 'umbrella' is)
+        parent_title = ""
+        for j in range(i - 1, -1, -1):
+            pd, ps = all_sections[j]
+            if pd < depth:
+                parent_title = ps.title
+                break
+        info["parent_process"] = parent_title
+
         xml, tasks_meta = section_to_bpmn(sec)
         slug = _slugify(sec.title)
         filename = f"{slug}_{doc_id[:6]}.bpmn"
@@ -722,6 +732,9 @@ def process_document(
         bpmns.append((filename, xml, tasks_meta, sec.title))
         section_texts[sec.title] = sec.full_text()
         already_processed.add(i)
+        # Sla filename -> parent mapping apart op in info zodat webapp het
+        # kan opslaan in project.json.bpmn_parents
+        info["generated_filename"] = filename
 
     result = DocProcessingResult(
         doc_id=doc_id,

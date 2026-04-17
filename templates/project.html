@@ -144,7 +144,13 @@
                        name="targets" form="bpmn-bulk-form">
             </td>
             <td><strong>{{ loop.index }}</strong></td>
-            <td><code>{{ f }}</code></td>
+            <td>
+                <code>{{ f }}</code>
+                {% set parent = (project.bpmn_parents or {}).get(f) %}
+                {% if parent %}
+                <br><span class="subproc-badge">↳ subproces van <strong>{{ parent }}</strong></span>
+                {% endif %}
+            </td>
             <td>
                 {% set rr = reasons_by_file.get(f) %}
                 {% if rr %}

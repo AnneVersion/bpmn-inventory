@@ -40,6 +40,7 @@ import bpmn_defs                                         # noqa: E402
 import bpmn_erd                                          # noqa: E402
 import bpmn_project                                      # noqa: E402
 import bpmn_docs                                         # noqa: E402
+import bpmn_anchors                                      # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -281,6 +282,14 @@ def _regenerate_project_summary(pid: str) -> dict:
     findings = findings + erd["cross_findings"]
     findings_summary = summarize(findings)
 
+    # GLOBALE ankerobjecten-repository bijwerken: zorg dat de tool
+    # cross-project weet welke entities centraal zijn in de organisatie.
+    try:
+        entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+        bpmn_anchors.ingest_from_model(ROOT, entities_obj, project_id=pid)
+    except Exception:
+        pass  # anchors-store is hulpdata, mag nooit de analyse blokkeren
+
     saved_files = [p.name for p in sorted(data_dir.glob("*.bpmn"))] + \
                   [p.name for p in sorted(data_dir.glob("*.xml"))]
 
@@ -306,6 +315,7 @@ def _regenerate_project_summary(pid: str) -> dict:
         "url_base": f"/project/{pid}",
         "is_project": True,
         "bpmn_files": saved_files,
+        "bpmn_parents": meta.get("bpmn_parents", {}),
         "versions": versions_by_file,
         "files": [{"name": b.source_file, "process": b.process_name,
                    "tasks": len(b.tasks),
@@ -666,6 +676,14 @@ def project_upload_doc(pid: str):
         if filename not in order:
             order.append(filename)
     meta["bpmn_order"] = order
+
+    # Subproces-hiërarchie: map filename -> parent_process (uit doc-classificatie)
+    parents = dict(meta.get("bpmn_parents", {}))
+    for s in result.section_classification:
+        fn = s.get("generated_filename")
+        if fn:
+            parents[fn] = s.get("parent_process", "")
+    meta["bpmn_parents"] = parents
     bpmn_project.save(ROOT, meta)
 
     # Entities als auto-discovered in global definitions
@@ -1348,6 +1366,23 @@ def session_activate_version(sid: str):
 # ---------------------------------------------------------------------------
 # Definities (user-dictionary)
 # ---------------------------------------------------------------------------
+
+@app.route("/anchors")
+def anchors_page():
+    """Overzicht van alle entities die over alle projecten heen zijn
+    waargenomen. Zo ziet de tool (en de gebruiker) wat de gedeelde
+    core van het bedrijfsdatamodel is."""
+    anchors = bpmn_anchors.get_anchors(ROOT, min_processes=2)
+    all_known = bpmn_anchors.get_all_known(ROOT)
+    single_use = [e for e in all_known if e["process_count"] < 2]
+    projects = bpmn_project.list_projects(ROOT)
+    project_names = {p["id"]: p["name"] for p in projects}
+    return render_template("anchors.html",
+                           anchors=anchors,
+                           single_use=single_use,
+                           total_known=len(all_known),
+                           project_names=project_names)
+
 
 @app.route("/definitions", methods=["GET"])
 def definitions_view():

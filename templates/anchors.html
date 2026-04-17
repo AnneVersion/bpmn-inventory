@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}Ankerobjecten - BPMN Inventory{% endblock %}
+
+{% block content %}
+<section>
+    <h1>⚓ Ankerobjecten (over alle projecten)</h1>
+    <p class="lead">
+        Entities die in <strong>2 of meer processen</strong> voorkomen. Dit is
+        de gedeelde core van jouw bedrijfsdatamodel — rondom deze entiteiten
+        draaien meerdere processen en zijn duplicaties / inconsistenties het
+        waarschijnlijkst. De tool gebruikt deze cross-project repository om bij
+        nieuwe BPMNs snel herkenningspunten te vinden.
+    </p>
+</section>
+
+<section>
+    <h2>Anker-entities ({{ anchors|length }})</h2>
+    {% if not anchors %}
+    <div class="empty">
+        <h3>Nog geen ankerobjecten</h3>
+        <p>Een entity wordt een anker zodra hij in minstens 2 processen
+        voorkomt. Analyseer minimaal 2 projecten met gedeelde dataObjects.</p>
+    </div>
+    {% else %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Entity</th>
+                <th style="width:80px;">Type</th>
+                <th style="width:80px;" class="num">Processen</th>
+                <th style="width:80px;" class="num">Projecten</th>
+                <th>Voorkomt in processen</th>
+                <th>Aliases</th>
+                <th>Laatst gezien</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in anchors %}
+            <tr>
+                <td>
+                    <strong>{{ a.name }}</strong>
+                </td>
+                <td>
+                    {% if a.is_master %}
+                        <span class="badge cls-vertrouwelijk">MASTER</span>
+                    {% else %}
+                        <span class="badge cls-bijzonder-persoonsgegeven">ANKER</span>
+                    {% endif %}
+                </td>
+                <td class="num"><strong>{{ a.process_count }}</strong></td>
+                <td class="num">{{ a.project_count }}</td>
+                <td>
+                    <small>
+                    {% for p in a.processes[:5] %}
+                        <span class="chip">{{ p }}</span>
+                    {% endfor %}
+                    {% if a.processes|length > 5 %}
+                        <span class="chip" style="background:#f0f3f8;">+{{ a.processes|length - 5 }}</span>
+                    {% endif %}
+                    </small>
+                </td>
+                <td>
+                    <small>
+                    {% for al in a.aliases[:3] %}
+                        <code>{{ al }}</code>
+                    {% endfor %}
+                    {% if a.aliases|length > 3 %}+{{ a.aliases|length - 3 }}{% endif %}
+                    </small>
+                </td>
+                <td><small>{{ a.last_seen.replace('T', ' ') }}</small></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+
+{% if single_use %}
+<section style="margin-top:24px;">
+    <details>
+        <summary>
+            <strong>Entiteiten die maar in 1 proces voorkomen ({{ single_use|length }})</strong>
+        </summary>
+        <table class="data-table">
+            <thead>
+                <tr><th>Entity</th><th>Proces</th><th>Project</th></tr>
+            </thead>
+            <tbody>
+                {% for e in single_use %}
+                <tr>
+                    <td><code>{{ e.name }}</code></td>
+                    <td><small>{{ (e.processes or [''])[0] }}</small></td>
+                    <td><small>
+                        {% for pid in e.projects %}
+                            {{ project_names.get(pid, pid) }}
+                        {% endfor %}
+                    </small></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </details>
+</section>
+{% endif %}
+
+<p style="margin-top:24px;">
+    <a href="{{ url_for('index') }}" class="btn-secondary">&larr; Terug</a>
+    <a href="{{ url_for('definitions_view') }}" class="btn-secondary">Definities &rarr;</a>
+</p>
+{% endblock %}

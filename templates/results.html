@@ -44,10 +44,12 @@
                     <select id="bpmn-select">
                         {% for f in summary.bpmn_files %}
                         {% set vcount = (summary.versions.get(f, [])|length) %}
-                        <option value="{{ f }}">{{ f }}{% if vcount > 1 %} (v{{ vcount }}){% endif %}</option>
+                        {% set parent = (summary.bpmn_parents or {}).get(f) %}
+                        <option value="{{ f }}" data-parent="{{ parent or '' }}">{{ f }}{% if vcount > 1 %} (v{{ vcount }}){% endif %}{% if parent %} — subproces van {{ parent }}{% endif %}</option>
                         {% endfor %}
                     </select>
                 </label>
+                <span id="subproc-indicator" class="subproc-indicator"></span>
                 <span id="bpmn-version-info" class="version-info"></span>
                 <form method="post" enctype="multipart/form-data"
                       action="{{ summary.url_base }}/upload-version"
@@ -1523,6 +1525,14 @@
         var info = document.getElementById('bpmn-version-info');
         var uploadTarget = document.getElementById('upload-target');
         if (uploadTarget) uploadTarget.value = name;
+        var parents = {{ (summary.bpmn_parents or {})|tojson }};
+        var subIndicator = document.getElementById('subproc-indicator');
+        if (subIndicator) {
+            var parent = parents[name];
+            subIndicator.innerHTML = parent
+                ? ('↳ <strong>subproces</strong> van <em>' + escapeHtml(parent) + '</em>')
+                : '';
+        }
         if (!info) return;
         var vs = (versions || {})[name] || [];
         if (vs.length === 0) {
