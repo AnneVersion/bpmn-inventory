@@ -275,11 +275,41 @@ a:hover { text-decoration: underline; }
     cursor: not-allowed;
 }
 
+.sec-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+}
+.sec-badge.sec-process     { background: #d1fae5; color: #065f46; }
+.sec-badge.sec-metadata    { background: #fef3c7; color: #92400e; }
+.sec-badge.sec-empty       { background: #e5e7eb; color: #374151; }
+.sec-badge.sec-skipped_nested { background: #fde4cf; color: #9a3412; }
+.sec-badge.sec-umbrella    { background: #e0e7ff; color: #3730a3; }
+
+.sec-class-table { margin-top: 10px; }
+.sec-class-table td small { color: var(--muted); }
+
 .compact-list {
     margin: 0; padding-left: 18px; font-size: .82rem;
 }
 .compact-list li { margin: 2px 0; }
 .compact-list code { font-size: .78rem; }
+
+.empty-datamodel {
+    background: #fef3c7;
+    border: 1px solid #fbcd7c;
+    border-left: 4px solid var(--warn);
+    border-radius: 6px;
+    padding: 12px 18px;
+    color: var(--text);
+    margin: 8px 0;
+    font-size: .92rem;
+}
+.empty-datamodel ul { padding-left: 20px; margin: 6px 0; }
 
 .process-doc-panel:empty { display: none; }
 .process-doc {

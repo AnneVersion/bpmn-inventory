@@ -77,11 +77,53 @@
                 </a>
             </td>
         </tr>
+        {% if d.section_classification %}
+        <tr class="doc-excerpts">
+            <td colspan="6">
+                <details open>
+                    <summary>
+                        <strong>🔍 Sectie-analyse</strong> —
+                        {% set total = d.section_classification|length %}
+                        {% set nproc = d.section_classification|selectattr('classification','equalto','process')|list|length %}
+                        {% set nmeta = d.section_classification|selectattr('classification','equalto','metadata')|list|length %}
+                        {{ total }} secties geclassificeerd:
+                        <span class="sec-badge sec-process">{{ nproc }} proces{% if nproc != 1 %}sen{% endif %}</span>
+                        <span class="sec-badge sec-metadata">{{ nmeta }} metadata</span>
+                    </summary>
+                    <table class="data-table sec-class-table">
+                        <thead>
+                            <tr>
+                                <th>Titel</th>
+                                <th>Niveau</th>
+                                <th>Classificatie</th>
+                                <th>Reden</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for s in d.section_classification %}
+                        <tr>
+                            <td>
+                                {% for _ in range(s.depth) %}&nbsp;&nbsp;&nbsp;&nbsp;{% endfor %}
+                                {% if s.classification == 'process' %}<strong>{{ s.title }}</strong>
+                                {% else %}{{ s.title }}{% endif %}
+                            </td>
+                            <td><small>H{{ s.level }}</small></td>
+                            <td><span class="sec-badge sec-{{ s.classification }}">{{ s.classification }}</span></td>
+                            <td><small>{{ s.reason }}</small></td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+            </td>
+        </tr>
+        {% endif %}
+
         {% if d.section_texts %}
         <tr class="doc-excerpts">
             <td colspan="6">
                 <details>
-                    <summary>Procesbeschrijvingen ({{ d.section_texts|length }} secties)</summary>
+                    <summary>📖 Procesbeschrijvingen ({{ d.section_texts|length }} secties met BPMN)</summary>
                     {% for proc_name, text in d.section_texts.items() %}
                     <div class="doc-excerpt">
                         <h4>{{ proc_name }}</h4>

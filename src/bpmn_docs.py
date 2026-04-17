@@ -34,10 +34,33 @@ DC_NS = "http://www.omg.org/spec/DD/20100524/DC"
 DIAG_NS = "http://www.omg.org/spec/DD/20100524/DI"
 
 
-# Trefwoorden die een "proces-start"-zin markeren
+# Trefwoorden die een heading als ECHTE proces-beschrijving markeren
 PROCESS_HEADING_HINTS = [
     "proces", "procedure", "workflow", "werkwijze", "stappen",
-    "afhandeling", "behandeling",
+    "afhandeling", "behandeling", "procesbeschrijving",
+    "procesbeschijving",          # veel voorkomende typo
+    "stappenplan", "uitvoering",
+]
+
+# Subproces-markers: P1, P2, P3 / L2 P01 / Stap 1 / etc.
+PROCESS_NUMBER_RE = re.compile(
+    r"^\s*(?:L\d+\s+)?(?:sub)?(?:proces\s*)?p\d+\b",
+    re.IGNORECASE,
+)
+STAP_RE = re.compile(r"^\s*stap\s*\d+\b", re.IGNORECASE)
+
+# Headings die nooit een proces zijn (metadata)
+METADATA_HEADING_HINTS = [
+    "doel", "doelstelling", "trigger", "resultaat", "scope",
+    "stakeholder", "actor", "rollen", "betrokken", "kpi",
+    "stuurinformatie", "risico", "aandachtspunt", "achtergrond",
+    "instructie", "type proces", "gebruikte data",
+    "gebruikte kanalen", "gebruikte systemen", "gebruikte systeem",
+    "inleiding", "samenvatting", "bijlage", "referentie",
+    "versiehistorie", "document", "review", "audit",
+    "afkortingen", "begrippen", "termen", "definities",
+    "wijzigingshistorie", "revisions", "samenvattend",
+    "resultaten",
 ]
 
 # Werkwoorden die sterke indicatie zijn dat een zin een task beschrijft
@@ -508,6 +531,8 @@ class DocProcessingResult:
     generated_bpmns: list[dict] = field(default_factory=list)  # [{filename, process_name, tasks}]
     extracted_entities: dict[str, list[str]] = field(default_factory=dict)
     section_texts: dict[str, str] = field(default_factory=dict)  # process_name -> full_text
+    # Nieuw: alle top-level secties met hun classificatie (process | metadata | empty)
+    section_classification: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -518,13 +543,101 @@ class DocProcessingResult:
             "generated_bpmns": self.generated_bpmns,
             "extracted_entities": self.extracted_entities,
             "section_texts": self.section_texts,
+            "section_classification": self.section_classification,
         }
+
+
+# ---------------------------------------------------------------------------
+# Sectie-classificatie: is dit een proces of metadata?
+# ---------------------------------------------------------------------------
+
+def _count_task_verbs(paragraphs: list[str]) -> int:
+    count = 0
+    for p in paragraphs:
+        for s in _split_sentences(p):
+            if _find_task_verb(s):
+                count += 1
+    return count
+
+
+def _all_paragraphs(section: "DocSection") -> list[str]:
+    """Verzamel alle paragraphs van sectie + recursief subsecties."""
+    out = list(section.paragraphs)
+    for c in section.children:
+        out.extend(_all_paragraphs(c))
+    return out
+
+
+def classify_section(section: "DocSection") -> tuple[str, str]:
+    """Classificeer een sectie als 'process' | 'metadata' | 'empty'.
+
+    Retourneert (classificatie, reden).
+
+    Regels (in volgorde):
+    1. Titel matcht 'P1', 'P2', 'Stap 1' -> process
+    2. Titel bevat een PROCESS_HEADING_HINT woord -> process
+    3. Titel bevat een METADATA_HEADING_HINT woord -> metadata
+    4. Telt 2+ task-werkwoorden in paragrafen -> process
+    5. Anders:
+       - Heeft geen content -> empty
+       - Anders -> metadata (veilige default, voorkomt onzin-BPMNs)
+    """
+    title_low = section.title.lower().strip()
+    if not title_low:
+        return ("empty", "Geen titel.")
+
+    if PROCESS_NUMBER_RE.match(section.title) or STAP_RE.match(section.title):
+        return ("process", f"Titel matcht proces-nummer-patroon ({section.title!r}).")
+
+    # Metadata-hints krijgen VOORRANG boven proces-hints, want zinnen als
+    # 'Trigger van het proces' matchen beide: 'trigger' is specifieker dan
+    # 'proces'. Dit voorkomt false-positives op rubrieken met proces in de naam.
+    for hint in METADATA_HEADING_HINTS:
+        if re.search(r"\b" + re.escape(hint) + r"\w*\b", title_low):
+            return ("metadata",
+                    f"Titel bevat metadata-trefwoord {hint!r} — waarschijnlijk "
+                    "geen procesbeschrijving.")
+
+    for hint in PROCESS_HEADING_HINTS:
+        if re.search(r"\b" + re.escape(hint) + r"\w*\b", title_low):
+            return ("process", f"Titel bevat proces-trefwoord {hint!r}.")
+
+    all_pars = _all_paragraphs(section)
+    verb_count = _count_task_verbs(all_pars)
+    if verb_count >= 2:
+        return ("process",
+                f"{verb_count} task-werkwoorden gevonden in paragrafen "
+                "(Registreer, Wijzig, Controleer, Valideer, ...).")
+
+    if not all_pars:
+        return ("empty", "Geen paragrafen onder deze sectie.")
+
+    return ("metadata",
+            "Geen proces-werkwoorden en geen proces-trefwoord in titel; "
+            "lijkt op metadata (achtergrond, beschrijving, toelichting).")
+
+
+def _walk_all_sections(sections: list[DocSection]) -> list[tuple[int, DocSection]]:
+    """Lineariseer de sectie-boom naar (depth, section) tuples."""
+    out: list[tuple[int, DocSection]] = []
+    def walk(sec: DocSection, depth: int):
+        out.append((depth, sec))
+        for c in sec.children:
+            walk(c, depth + 1)
+    for s in sections:
+        walk(s, 0)
+    return out
 
 
 def process_document(
     source_path: Path, doc_id: str
 ) -> tuple[ParsedDoc, ExtractedEntities, list[tuple[str, bytes, list[dict], str]], DocProcessingResult]:
-    """Parse + extract + genereer BPMNs voor alle top-level secties.
+    """Parse + extract + genereer BPMNs UIT SECTIES die als 'process' worden
+    geclassificeerd (niet uit metadata-secties).
+
+    Ook subsecties (L2, L3) worden meegenomen als ze een proces zijn —
+    zodat een document met "P1 / P2 / P3" onder een hoofdproces
+    correct 3 subprocessen oplevert.
 
     Returns:
         parsed: ParsedDoc
@@ -545,24 +658,70 @@ def process_document(
     bpmns: list[tuple[str, bytes, list[dict], str]] = []
     section_texts: dict[str, str] = {}
 
-    # Per top-level sectie genereer een .bpmn
-    def gen_for(sec: DocSection, depth: int):
-        if depth >= 2:
-            return
-        # Skip lege secties
-        has_content = bool(sec.paragraphs or sec.children)
-        if not has_content:
-            return
+    # Classificeer ELKE sectie (ook subsecties) zodat subprocessen
+    # zichtbaar zijn in de audit-log.
+    classified: list[dict] = []
+    all_sections = _walk_all_sections(parsed.sections)
+    for depth, sec in all_sections:
+        cls, reason = classify_section(sec)
+        classified.append({
+            "title": sec.title,
+            "level": sec.level,
+            "depth": depth,
+            "classification": cls,
+            "reason": reason,
+            "paragraph_count": len(sec.paragraphs),
+            "child_count": len(sec.children),
+        })
+
+    # Bepaal welke secties paraplu's zijn voor subprocessen: als een
+    # sectie depth=0 een 'process' is EN er zit minstens 1 'process'
+    # subsectie onder, dan skippen we de paraplu (om dubbele BPMNs
+    # te voorkomen). Subsecties blijven wel eigen BPMN.
+    umbrella_indices: set[int] = set()
+    for i, (depth, sec) in enumerate(all_sections):
+        if classified[i]["classification"] != "process":
+            continue
+        # Kijk naar alle volgende secties die dieper genest zijn
+        has_process_subsection = False
+        j = i + 1
+        while j < len(all_sections) and all_sections[j][0] > depth:
+            if classified[j]["classification"] == "process":
+                has_process_subsection = True
+                break
+            j += 1
+        if has_process_subsection:
+            umbrella_indices.add(i)
+            classified[i]["reason"] += \
+                " (paraplu overgeslagen: subsecties zijn al proces)"
+            classified[i]["classification"] = "umbrella"
+
+    # Bepaal welke secties we als BPMN genereren:
+    # - classificatie == 'process'
+    # - max depth 2 (anders worden BPMNs te gedetailleerd en nested)
+    already_processed: set[int] = set()
+    for i, (depth, sec) in enumerate(all_sections):
+        info = classified[i]
+        if info["classification"] != "process":
+            continue
+        if depth > 2:
+            info["reason"] += " (overgeslagen: te diep genest)"
+            info["classification"] = "skipped_nested"
+            continue
+
         xml, tasks_meta = section_to_bpmn(sec)
         slug = _slugify(sec.title)
         filename = f"{slug}_{doc_id[:6]}.bpmn"
+        # voorkom dubbele filenames (bv. meerdere "P1" secties)
+        suffix = 1
+        orig_filename = filename
+        while any(b[0] == filename for b in bpmns):
+            suffix += 1
+            filename = orig_filename.replace(f"_{doc_id[:6]}",
+                                             f"_{suffix}_{doc_id[:6]}")
         bpmns.append((filename, xml, tasks_meta, sec.title))
         section_texts[sec.title] = sec.full_text()
-        for child in sec.children:
-            gen_for(child, depth + 1)
-
-    for sec in parsed.sections:
-        gen_for(sec, depth=0)
+        already_processed.add(i)
 
     result = DocProcessingResult(
         doc_id=doc_id,
@@ -574,6 +733,7 @@ def process_document(
         } for fn, _, tm, pn in bpmns],
         extracted_entities={k: sorted(v) for k, v in entities.entities.items()},
         section_texts=section_texts,
+        section_classification=classified,
     )
     return parsed, entities, bpmns, result
 

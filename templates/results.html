@@ -96,18 +96,44 @@
                     <div id="process-doc-panel" class="process-doc-panel"></div>
 
                     <!-- Inline datamodel (ERD) direct onder het diagram -->
-                    {% if summary.mermaid_erd %}
                     <h4 class="findings-heading" style="margin-top:18px;">
-                        Datamodel uit dit project
+                        📊 Datamodel uit dit project
                     </h4>
+                    {% if summary.mermaid_erd %}
                     <p class="viewer-hint">
-                        {{ summary.erd.entities|length }} entities,
+                        <strong>{{ summary.erd.entities|length }} entities</strong>,
                         {{ summary.erd.relationships|length }} relaties, afgeleid
                         over alle BPMNs in het project.
                         <a href="#" data-tab-link="erd">Ga naar volledige ERD-tab &rarr;</a>
                     </p>
                     <div class="mermaid-wrap">
                         <pre class="mermaid" id="mermaid-erd-under-original">{{ summary.mermaid_erd }}</pre>
+                    </div>
+                    {% else %}
+                    <div class="empty-datamodel">
+                        <p><strong>Geen datamodel afgeleid</strong></p>
+                        <p>De BPMNs in dit project bevatten geen (of te weinig)
+                        <code>&lt;bpmn:dataObject&gt;</code>-elementen om entities uit
+                        af te leiden. Mogelijke oorzaken:</p>
+                        <ul>
+                            <li>De BPMNs zijn gegenereerd uit een Word-document met
+                                voornamelijk <strong>metadata-secties</strong>
+                                (Doel, Trigger, Stakeholders, KPIs) i.p.v. echte
+                                procesworkflows.</li>
+                            <li>De modelleur heeft dataObjects niet expliciet
+                                getekend.</li>
+                            <li>Taaknamen bevatten geen bekende entity-woorden
+                                (lid, organisatie, factuur, machtiging…).</li>
+                        </ul>
+                        <p><strong>Oplossingen:</strong></p>
+                        <ul>
+                            <li>Klik op <strong>Toepassen</strong> bij R101-findings
+                                in de Kwaliteitscheck — dan voegt de tool zelf
+                                dataObjects toe op basis van taaknamen.</li>
+                            <li>Of voeg handmatig entities toe in
+                                <a href="/definitions" target="_blank">/definities</a>
+                                en upload de BPMNs opnieuw.</li>
+                        </ul>
                     </div>
                     {% endif %}
 

@@ -402,6 +402,30 @@ def build_erd(model: "MergedModel",
             e.is_master = True
             e.source_processes.add(parsed.process_name or parsed.source_file)
 
+    # --- Step 1b: FALLBACK — als geen (of te weinig) expliciete dataObjects,
+    # leid entities af uit taaknamen via CANONICAL_MAP / ATTRIBUTE_HINTS-keys.
+    # Zo werkt het ERD ook voor BPMNs waar de modelleur geen dataObjects
+    # heeft getekend (bv. gegenereerd uit procesbeschrijvings-documenten).
+    if len(entities) < 2:
+        noun_hints = sorted(set(CANONICAL_MAP.keys()) |
+                            set(ATTRIBUTE_HINTS.keys()))
+        for parsed in model.bpmns:
+            proc_name = parsed.process_name or parsed.source_file
+            for t in parsed.tasks:
+                name = (t.name or "").lower()
+                if not name:
+                    continue
+                for hint in noun_hints:
+                    if len(hint) < 3:
+                        continue
+                    if re.search(r"\b" + re.escape(hint), name):
+                        canonical = canonicalize(hint)
+                        if not canonical:
+                            continue
+                        e = _get_or_create(canonical, hint)
+                        e.source_processes.add(proc_name)
+                        e.source_bpmn_ids.append(t.id)
+
     if not entities:
         return [], []
 
