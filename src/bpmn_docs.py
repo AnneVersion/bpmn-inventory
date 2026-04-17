@@ -97,6 +97,8 @@ METADATA_HEADING_HINTS = [
     "afkortingen", "begrippen", "termen", "definities",
     "wijzigingshistorie", "revisions", "samenvattend",
     "resultaten",
+    "verbeterpunten", "verbeterpunt", "opmerking", "opmerkingen",
+    "omschrijving", "overzicht",
 ]
 
 # Werkwoorden die sterke indicatie zijn dat een zin een task beschrijft
@@ -163,46 +165,91 @@ def extract_docx(path: Path) -> ParsedDoc:
     """Lees een .docx in en bouw een hiërarchische sectiestructuur
     op basis van Heading-styles (Heading 1, Heading 2, ...).
 
-    Als er geen headings zijn wordt alles onder één fictieve sectie
-    "Document" geplaatst.
+    Leest ALLE content inclusief tabellen. Tabellen worden omgezet naar
+    tekstregels (header | cel | cel) die aan de huidige sectie worden
+    toegevoegd. Zo pikt het parser-downstream actoren-tabellen,
+    stakeholders-tabellen en attribuut-tabellen op.
     """
     from docx import Document
+    from docx.oxml.ns import qn
     doc = Document(path)
     root = DocSection(level=0, title="(root)")
     stack: list[DocSection] = [root]
     raw_lines: list[str] = []
 
-    for para in doc.paragraphs:
-        text = (para.text or "").strip()
-        if not text:
-            continue
-        raw_lines.append(text)
-        style_name = (para.style.name if para.style else "") or ""
-        lvl = None
-        m = re.match(r"Heading\s+(\d+)", style_name, re.IGNORECASE)
-        if m:
-            try:
-                lvl = int(m.group(1))
-            except ValueError:
-                lvl = None
-        if lvl is None and style_name.lower() == "title":
-            lvl = 1
+    # We iterateren OVER body-children in document-volgorde i.p.v. losse
+    # paragraphs + tables, zodat een tabel direct onder zijn heading
+    # belandt (en niet onder de laatste heading van het document).
+    body = doc.element.body
+    for child in body.iterchildren():
+        tag = child.tag.split('}', 1)[-1] if '}' in child.tag else child.tag
 
-        if lvl is not None:
-            # Nieuwe sectie op diepte lvl
-            while stack and stack[-1].level >= lvl:
-                stack.pop()
-            section = DocSection(level=lvl, title=text)
-            if not stack:
-                stack = [root]
-            stack[-1].children.append(section)
-            stack.append(section)
-        else:
-            # Paragraaf hoort bij top-van-stack, of bij root als leeg
+        if tag == 'p':
+            # Paragraph
+            para_text = "".join(
+                t.text or "" for t in child.iter(qn('w:t'))
+            ).strip()
+            if not para_text:
+                continue
+            raw_lines.append(para_text)
+            # Style-naam ophalen
+            style_name = ""
+            pStyle = child.find(qn('w:pPr') + '/' + qn('w:pStyle'))
+            if pStyle is not None:
+                style_name = pStyle.get(qn('w:val'), "") or ""
+            # Heading ook als 'Heading 1' of 'Kop 1' (NL)
+            lvl = None
+            m = re.match(r"Heading(\d+)", style_name)
+            if m:
+                try:
+                    lvl = int(m.group(1))
+                except ValueError:
+                    lvl = None
+            if lvl is None:
+                m = re.match(r"(?:Kop|Heading)\s*(\d+)", style_name,
+                             re.IGNORECASE)
+                if m:
+                    try:
+                        lvl = int(m.group(1))
+                    except ValueError:
+                        lvl = None
+            if lvl is None and style_name.lower() in ("title", "titel"):
+                lvl = 1
+
+            if lvl is not None:
+                while stack and stack[-1].level >= lvl:
+                    stack.pop()
+                section = DocSection(level=lvl, title=para_text)
+                if not stack:
+                    stack = [root]
+                stack[-1].children.append(section)
+                stack.append(section)
+            else:
+                target = stack[-1] if stack else root
+                target.paragraphs.append(para_text)
+
+        elif tag == 'tbl':
+            # Table -> transformeer naar paragraph-regels in huidige sectie
+            rows: list[list[str]] = []
+            for tr in child.iter(qn('w:tr')):
+                cells: list[str] = []
+                for tc in tr.iter(qn('w:tc')):
+                    cell_text = " ".join(
+                        t.text or "" for t in tc.iter(qn('w:t'))
+                    ).strip()
+                    cells.append(cell_text)
+                if any(cells):
+                    rows.append(cells)
+            if not rows:
+                continue
+            # Header-rij:
+            header = rows[0]
             target = stack[-1] if stack else root
-            target.paragraphs.append(text)
+            target.paragraphs.append("TABLE_HEADERS: " + " | ".join(header))
+            for r in rows[1:]:
+                target.paragraphs.append("TABLE_ROW: " + " | ".join(r))
+                raw_lines.append(" | ".join(r))
 
-    # Als helemaal geen headings: 1 fallback-sectie
     if not root.children and root.paragraphs:
         fallback = DocSection(level=1, title=path.stem,
                               paragraphs=root.paragraphs)
@@ -443,16 +490,57 @@ def extract_process_fields(section: "DocSection") -> ProcessFields:
 
     fields.raw_fields = raw
 
+    # Helper: verwijder TABLE_HEADERS/TABLE_ROW-markers uit strings en
+    # extraheer de relevante kolom.
+    def _parse_table_lines(lines: list[str], primary_col: int = 0) -> list[str]:
+        """Uit TABLE_ROW-regels haal de `primary_col`-waarde."""
+        out = []
+        headers: list[str] = []
+        for line in lines:
+            if line.startswith("TABLE_HEADERS:"):
+                headers = [h.strip() for h in line[14:].split("|")]
+                continue
+            if line.startswith("TABLE_ROW:"):
+                cells = [c.strip() for c in line[10:].split("|")]
+                if primary_col < len(cells) and cells[primary_col]:
+                    out.append(cells[primary_col])
+                continue
+            out.append(line)
+        return out
+
     # Normaliseer velden naar de dataclass
-    fields.trigger = " ".join(raw.get("trigger", []))[:200]
-    fields.doel = " ".join(raw.get("doel", []))[:400]
-    fields.resultaat = " ".join(raw.get("resultaat", []))[:200]
-    fields.actoren = [a for a in raw.get("actoren", []) if a]
-    fields.stappen = [s for s in raw.get("stappen", []) if s]
-    fields.data_items = [d for d in raw.get("data", []) if d]
-    fields.systemen = [s for s in raw.get("systemen", []) if s]
-    fields.beslispunten = [b for b in raw.get("beslispunten", []) if b]
-    fields.regels = [r for r in raw.get("regels", []) if r]
+    fields.trigger = " ".join(
+        _p for _p in raw.get("trigger", [])
+        if not _p.startswith("TABLE_")
+    )[:200]
+    fields.doel = " ".join(
+        _p for _p in raw.get("doel", [])
+        if not _p.startswith("TABLE_")
+    )[:400]
+    fields.resultaat = " ".join(
+        _p for _p in raw.get("resultaat", [])
+        if not _p.startswith("TABLE_")
+    )[:200]
+
+    # Actoren: uit bullets én tabellen (kolom 0 = 'Naam' of 'Rol')
+    fields.actoren = [a for a in _parse_table_lines(raw.get("actoren", []))
+                      if a and not a.lower().startswith("naam")
+                      and not a.lower().startswith("rol")
+                      and len(a) < 80]
+
+    fields.stappen = [s for s in raw.get("stappen", []) if s
+                      and not s.startswith("TABLE_")]
+
+    # Data-items uit "Gebruikte data": bullets + tabellen
+    fields.data_items = [d for d in _parse_table_lines(raw.get("data", []))
+                         if d and len(d) < 120]
+
+    fields.systemen = [s for s in raw.get("systemen", []) if s
+                       and not s.startswith("TABLE_")]
+    fields.beslispunten = [b for b in raw.get("beslispunten", []) if b
+                           and not b.startswith("TABLE_")]
+    fields.regels = [r for r in raw.get("regels", []) if r
+                     and not r.startswith("TABLE_")]
     return fields
 
 
@@ -530,28 +618,65 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
     proc_id = _safe_id("Process", "Proc")
     proc_name = section.title[:120]
 
-    # Bepaal stappen: voorkeur voor expliciete 'Stappen'-bullets, anders
-    # detecteer zinnen met werkwoord zoals voorheen.
-    stap_sources = fields.stappen if fields.stappen else []
+    # Bepaal stappen:
+    # 1. Expliciete bullet-lijst uit 'Stappen'-veld -> elke bullet = 1 task
+    # 2. Procesbeschrijving (proza) -> split in zinnen, pak de zinnen met
+    #    task-werkwoord als individuele taken
+    # 3. Fallback: alle paragraphs in sectie
+    stap_sources: list[str] = []
+    if fields.stappen:
+        # Fields.stappen kan bullets bevatten (1-per-regel) of proza-zinnen.
+        # Split elke regel in zinnen en houd degene met task-verb.
+        for raw in fields.stappen:
+            sents = _split_sentences(raw)
+            if len(sents) <= 1:
+                # 1 zin: direct overnemen (bv. bullet zoals 'Registreer het lid.')
+                stap_sources.append(raw)
+            else:
+                # Meerdere zinnen (proza-proces-beschrijving): split en filter
+                for s in sents:
+                    if _find_task_verb(s) or len(stap_sources) == 0:
+                        stap_sources.append(s)
+                    if len(stap_sources) >= 25:
+                        break
+
     if not stap_sources:
-        sentences = []
+        # Geen expliciet 'Stappen'-veld -> scan alle paragrafen
+        sentences: list[str] = []
         for p in section.paragraphs:
             sentences.extend(_split_sentences(p))
+        for child in section.children:
+            for p in child.paragraphs:
+                sentences.extend(_split_sentences(p))
         for s in sentences:
             if _find_task_verb(s):
                 stap_sources.append(s)
-            if len(stap_sources) >= 20:
+            if len(stap_sources) >= 25:
                 break
+
     if not stap_sources:
+        # Laatste fallback: gebruik de sectietitel zelf
         stap_sources = [section.title]
 
+    # Dedup (zelfde zin kan in meerdere velden staan)
+    seen_low: set[str] = set()
+    deduped: list[str] = []
+    for s in stap_sources:
+        k = s.lower().strip()[:80]
+        if k and k not in seen_low:
+            seen_low.add(k)
+            deduped.append(s)
+    stap_sources = deduped[:25]
+
     task_items = []
-    for src in stap_sources[:25]:
+    for src in stap_sources:
         verb = _find_task_verb(src) or ""
         if verb:
             name = _extract_task_name(src, verb)
         else:
-            name = _capitalize(src)[:100]
+            # Neem eerste 8 woorden en capitaliseer
+            words = src.split()[:8]
+            name = _capitalize(" ".join(words))[:100]
         task_items.append({"verb": verb, "source": src, "name": name})
 
     # Entities: combineer auto-discovery + expliciete data-items uit veld
@@ -559,23 +684,74 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
         source_file="(generated)", kind="docx", sections=[section]
     ))
     entity_names = set(ex.entities.keys())
+
+    # --- Hoofd-entity uit sectietitel afleiden.
+    # Bij FNV-SOLL heet een sub-proces bv "3 Sub proces P01 Controle en
+    # verrijking concept organisatie". Het laatste zelfstandig naamwoord
+    # is de hoofd-entity. Match op bekende entity-hints.
+    primary_entity: str = ""
+    title_low = section.title.lower()
+    for hint in ENTITY_HINTS:
+        if re.search(r"\b" + re.escape(hint) + r"\w*\b", title_low):
+            primary_entity = hint.capitalize()
+            entity_names.add(primary_entity)
+            ex.entities.setdefault(primary_entity, set())
+            break
+
+    # --- Data-items: bepaal of ze attributen zijn of zelfstandige entities
+    # Heuristiek:
+    # - Als items losse woorden zijn (bv "Bedrijfsnaam", "KVK nummer",
+    #   "Sector"): dit zijn ATTRIBUTEN van primary_entity
+    # - Als een item matcht met een bekende entity-hint (Lid, Organisatie,
+    #   Machtiging): dit is een SEPARATE entity
+    # - Als item "Entity (attr, attr, attr)" formaat heeft: entity + attrs
     for item in fields.data_items:
-        # item kan zijn "Lidmaatschap" of "Lid (met naam, bsn, adres)"
-        m = re.match(r"^([A-Z][\w\s-]*?)(?:\s*\(|\s*$)", item)
+        # Skip TABLE_-prefixed items (die komen uit tabellen, aparte afhandeling)
+        if item.startswith("TABLE_"):
+            continue
+
+        # Is het een "Entity (attr1, attr2)" formaat?
+        m = re.match(r"^([A-Z][\w\s-]*?)\s*\(([^)]+)\)\s*$", item)
         if m:
             name = m.group(1).strip().capitalize()
             if len(name) >= 3:
                 entity_names.add(name)
-                # Probeer attributen uit haakjes te halen
-                attr_match = re.search(r"\(([^)]+)\)", item)
-                if attr_match:
-                    attrs = [a.strip().lower() for a in
-                             re.split(r"[,;]", attr_match.group(1))
-                             if a.strip()]
-                    existing = ex.entities.setdefault(name, set())
-                    for a in attrs:
-                        if len(a) >= 2 and len(a) <= 30:
-                            existing.add(a)
+                attrs = [a.strip().lower() for a in
+                         re.split(r"[,;]", m.group(2)) if a.strip()]
+                existing = ex.entities.setdefault(name, set())
+                for a in attrs:
+                    if 2 <= len(a) <= 40:
+                        existing.add(a)
+            continue
+
+        # Is het een bekende entity-hint?
+        item_low = item.strip().lower()
+        matched_hint = None
+        for hint in ENTITY_HINTS:
+            if re.fullmatch(re.escape(hint) + r"s?", item_low) or \
+               item_low.startswith(hint + " ") or \
+               item_low.endswith(" " + hint):
+                matched_hint = hint.capitalize()
+                break
+        if matched_hint:
+            entity_names.add(matched_hint)
+            ex.entities.setdefault(matched_hint, set())
+            continue
+
+        # Anders: behandel als attribuut van primary_entity (indien aanwezig)
+        target_entity = primary_entity
+        if not target_entity and entity_names:
+            # Val terug op eerste entity in sectie
+            target_entity = sorted(entity_names)[0]
+        if target_entity:
+            clean = item.strip().lower()
+            # Strip leading bullet-achtige prefixes
+            clean = re.sub(r"^[-*\u2022\u25cb\u25cf\u25aa\u25ab\d.)\s]+", "", clean)
+            clean = clean.strip()
+            if 2 <= len(clean) <= 60:
+                ex.entities.setdefault(target_entity, set()).add(clean)
+                entity_names.add(target_entity)
+
     entity_names = sorted(entity_names)
 
     # --- XML root + collaboration (pool wrapper)
@@ -948,7 +1124,11 @@ def classify_section(section: "DocSection") -> tuple[str, str]:
 
     # SOLL-veldnamen zijn GEEN eigen proces — ze zijn velden binnen een
     # parent-proces (Trigger/Doel/Actoren/Stappen/Gebruikte data/...).
-    field_match = _match_field_alias(section.title)
+    # Ook genummerd ("2.5 Procesbeschrijving") herkennen we als veld.
+    # Strip hoofdnummer prefix voordat we matchen.
+    title_no_num = re.sub(r"^\s*\d+(?:\.\d+)*\s+", "", section.title)
+    field_match = (_match_field_alias(section.title)
+                   or _match_field_alias(title_no_num))
     if field_match:
         return ("field",
                 f"Titel is een SOLL-veldnaam ({field_match!r}) — hoort bij "

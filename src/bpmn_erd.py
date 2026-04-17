@@ -581,6 +581,82 @@ def build_erd(model: "MergedModel",
                         rel.is_identifying = True
                 break
 
+    # --- Step 6b: tekst-co-occurrence relaties (voor BPMNs zonder
+    # formele data-associations, bv. gegenereerd uit Word-docs).
+    # Alleen entities die in DEZELFDE ZIN van een proces-documentation
+    # voorkomen krijgen een 'gerelateerd (tekst)'-relatie. Voorkomt
+    # explosie van relaties tussen alle entities in een doc.
+    existing_pairs = {
+        tuple(sorted([r.left, r.right])) for r in relationships
+    }
+    # Per paar: tel hoe vaak ze samen in 1 zin voorkomen
+    cooc: dict[tuple[str, str], int] = defaultdict(int)
+    cooc_evidence: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for parsed in model.bpmns:
+        proc_doc = getattr(parsed, "process_documentation", "") or ""
+        if not proc_doc:
+            continue
+        # Split in zinnen
+        for sent in re.split(r"(?<=[.!?])\s+", proc_doc):
+            sent_low = sent.lower()
+            found_in_sent = []
+            for name in entities:
+                if re.search(r"\b" + re.escape(name.lower()) + r"\w*\b",
+                             sent_low):
+                    found_in_sent.append(name)
+            if len(found_in_sent) < 2:
+                continue
+            # Voeg paren toe uit deze zin
+            for i in range(len(found_in_sent)):
+                for j in range(i + 1, len(found_in_sent)):
+                    a, b = found_in_sent[i], found_in_sent[j]
+                    key = tuple(sorted([a, b]))
+                    cooc[key] += 1
+                    if len(cooc_evidence[key]) < 2:
+                        cooc_evidence[key].append(sent[:120])
+
+    # Voeg relatie toe voor paren die in >= 1 zin samen voorkomen
+    for (a, b), count in cooc.items():
+        if (a, b) in existing_pairs or (b, a) in existing_pairs:
+            continue
+        existing_pairs.add((a, b))
+        relationships.append(Relationship(
+            left=a, right=b,
+            left_card="0..N", right_card="0..N",
+            label=f"gerelateerd (tekst, {count}×)",
+            evidence=cooc_evidence[(a, b)],
+        ))
+
+    # --- Step 6c: FK-relaties via attribuut-naam-match
+    # Als entity A een attribuut heeft dat gelijk is aan de naam van
+    # entity B (of entity-naam + nummer / id / code), dan is A -> B een
+    # FK-relatie.
+    entity_names_low = {e.name.lower(): e.name for e in entities.values()}
+    for e in entities.values():
+        for attr in e.attributes:
+            if attr.is_pk:
+                continue
+            attr_low = attr.name.lower()
+            # probeer 'lidnummer' -> 'lid', 'kvknummer' -> 'organisatie'?
+            # Simpel: strip achtervoegsels
+            for suffix in ("nummer", "id", "code", "ref"):
+                if attr_low.endswith(suffix) and len(attr_low) > len(suffix):
+                    base = attr_low[:-len(suffix)].strip()
+                    if base in entity_names_low and base != e.name.lower():
+                        target = entity_names_low[base]
+                        attr.is_fk = True
+                        attr.fk_to = target
+                        key = tuple(sorted([e.name, target]))
+                        if key not in existing_pairs:
+                            existing_pairs.add(key)
+                            relationships.append(Relationship(
+                                left=e.name, right=target,
+                                left_card="0..N", right_card="1",
+                                label=f"heeft {target}",
+                                evidence=[f"FK via attribuut {attr.name}"],
+                            ))
+                        break
+
     # --- Step 7: user-defined attributen mergen (heeft voorrang)
     for e in entities.values():
         _merge_user_defined_attributes(e, user_defs)
