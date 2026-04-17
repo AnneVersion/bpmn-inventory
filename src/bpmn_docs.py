@@ -358,27 +358,32 @@ def _qname(ns: str, tag: str) -> str:
 
 
 def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
-    """Bouw een .bpmn XML-bytes uit één sectie.
+    """Bouw Camunda-style .bpmn XML uit één sectie.
 
-    - Sectietitel = proces-naam
-    - Elke paragraaf/zin met een task-verb = userTask
-    - Start- en end-event automatisch
-    - Entities in de sectie = dataObjects
-    - Basic DI-waypoints zodat bpmn-js kan renderen
-
-    Returns (xml_bytes, tasks_meta) waar tasks_meta per task de
-    brontekst bevat (voor "origin"-linking later).
+    Output-struktuur (compatible met bpmn.io / Camunda Modeler):
+    - <bpmn:collaboration> met <bpmn:participant name="..." processRef=...>
+      zodat het diagram een proces-pool toont met de proces-naam erop
+    - <bpmn:process isExecutable="true"> met:
+        * startEvent + serviceTask(s) + endEvent
+        * Elke task heeft <bpmn:incoming>/<bpmn:outgoing> refs (Camunda-convention)
+        * sequenceFlows met Flow_-ids
+    - BPMN-DI plane verwijst naar de collaboration
+    - Elke shape krijgt <bpmndi:BPMNLabel /> voor correcte label-positionering
+    - Task-subtype serviceTask geeft het tandwiel-icon (matcht Camunda-stijl);
+      fallback naar userTask als verb 'raadpleeg'/'controleer'/etc. (niet
+      geautomatiseerd)
     """
     _register_namespaces()
 
-    proc_id = _safe_id(section.title, "Proc")
+    coll_id = _safe_id("Collaboration", "Collab")
+    part_id = _safe_id("Participant", "P")
+    proc_id = _safe_id("Process", "Proc")
     proc_name = section.title[:120]
 
-    # Verzamel taak-zinnen
+    # Verzamel task-zinnen (max 20)
     sentences = []
     for p in section.paragraphs:
         sentences.extend(_split_sentences(p))
-    # Taken: alleen zinnen met een verb-match, max 20
     task_items = []
     for s in sentences:
         v = _find_task_verb(s)
@@ -387,40 +392,57 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
             task_items.append({"verb": v, "source": s, "name": nm})
         if len(task_items) >= 20:
             break
-
-    # Als geen task-zinnen gevonden, maak 1 dummy task van de titel
     if not task_items:
         task_items = [{"verb": "", "source": section.title,
                        "name": _capitalize(section.title)[:80]}]
 
-    # Entities in de sectie
+    # Entities
     ex = extract_entities(ParsedDoc(
         source_file="(generated)", kind="docx", sections=[section]
     ))
     entity_names = sorted(ex.entities.keys())
 
-    # Bouw XML
+    # --- XML root + collaboration (pool wrapper)
     defs = ET.Element(_qname(BPMN_NS, "definitions"), {
-        "id": _safe_id("Defs", "D"),
-        "targetNamespace": "http://bpmn.io/generated",
+        "id": _safe_id("Definitions", "D"),
+        "targetNamespace": "http://bpmn.io/schema/bpmn",
+        "exporter": "BPMN Inventory doc-generator",
     })
+    collab = ET.SubElement(defs, _qname(BPMN_NS, "collaboration"),
+                           {"id": coll_id})
+    ET.SubElement(collab, _qname(BPMN_NS, "participant"), {
+        "id": part_id,
+        "name": proc_name,
+        "processRef": proc_id,
+    })
+
     proc = ET.SubElement(defs, _qname(BPMN_NS, "process"), {
-        "id": proc_id, "name": proc_name,
+        "id": proc_id, "name": proc_name, "isExecutable": "true",
     })
-    # Documentation met brontekst
     doc_txt = ET.SubElement(proc, _qname(BPMN_NS, "documentation"))
     doc_txt.text = "SOURCE_DOC_SECTION_TEXT:\n" + section.full_text()[:4000]
+
+    # --- Bouw flow-graph: start -> task1 -> task2 -> ... -> end
+    # We bepalen eerst alle ids en flows, zodat we incoming/outgoing
+    # kunnen toevoegen per element.
+    start_id = "StartEvent_1"
+    end_id = _safe_id("EndEvent", "EndEvent")
+    task_ids = [f"Activity_{uuid.uuid4().hex[:7]}" for _ in task_items]
+    flow_ids = [f"Flow_{uuid.uuid4().hex[:7]}"
+                for _ in range(len(task_ids) + 1)]
+    # flow_ids[i] = flow van node i naar node i+1 in [start, task0, task1, ..., end]
+
+    node_chain = [start_id] + task_ids + [end_id]
 
     # DataObjects
     data_obj_ids = []
     for ent in entity_names:
-        do_id = _safe_id(ent, "DO")
-        dor_id = _safe_id(ent, "DOR")
+        do_id = f"DataObject_{uuid.uuid4().hex[:7]}"
+        dor_id = f"DataObjectReference_{uuid.uuid4().hex[:7]}"
         ET.SubElement(proc, _qname(BPMN_NS, "dataObject"),
                       {"id": do_id, "name": ent})
         ET.SubElement(proc, _qname(BPMN_NS, "dataObjectReference"),
                       {"id": dor_id, "name": ent, "dataObjectRef": do_id})
-        # Attribuut-annotatie als JSON in documentation
         attrs = sorted(ex.entities.get(ent, set()))
         if attrs:
             doc_el = ET.SubElement(proc, _qname(BPMN_NS, "documentation"))
@@ -428,93 +450,117 @@ def section_to_bpmn(section: DocSection) -> tuple[bytes, list[dict]]:
                            + json.dumps(attrs, ensure_ascii=False))
         data_obj_ids.append((ent, dor_id))
 
-    # Start event
-    start_id = _safe_id("start", "SE")
-    ET.SubElement(proc, _qname(BPMN_NS, "startEvent"),
-                  {"id": start_id, "name": "Start"})
+    # --- StartEvent (met outgoing ref)
+    se = ET.SubElement(proc, _qname(BPMN_NS, "startEvent"),
+                       {"id": start_id})
+    ET.SubElement(se, _qname(BPMN_NS, "outgoing")).text = flow_ids[0]
 
-    # Tasks + sequence flows
-    prev_id = start_id
+    # --- Tasks (serviceTask met incoming/outgoing refs)
     tasks_meta = []
-    for i, t in enumerate(task_items, start=1):
-        tid = _safe_id(f"t{i}", "Task")
-        task_el = ET.SubElement(proc, _qname(BPMN_NS, "userTask"),
+    for i, t in enumerate(task_items):
+        tid = task_ids[i]
+        task_el = ET.SubElement(proc, _qname(BPMN_NS, "serviceTask"),
                                 {"id": tid, "name": t["name"][:100]})
-        # Brontekst in documentation
         d = ET.SubElement(task_el, _qname(BPMN_NS, "documentation"))
         d.text = "SOURCE_SENTENCE:" + t["source"][:500]
-        # Koppel alle dataobjects als dataInputAssociation
+        ET.SubElement(task_el, _qname(BPMN_NS, "incoming")).text = flow_ids[i]
+        ET.SubElement(task_el, _qname(BPMN_NS, "outgoing")).text = flow_ids[i + 1]
+        # DataInput-associations naar alle entities
         for ent, dor_id in data_obj_ids:
             ia = ET.SubElement(task_el, _qname(BPMN_NS, "dataInputAssociation"),
-                               {"id": _safe_id(ent, "IA")})
+                               {"id": f"DataInputAssociation_{uuid.uuid4().hex[:6]}"})
             ET.SubElement(ia, _qname(BPMN_NS, "sourceRef")).text = dor_id
-        # Sequence flow van vorige naar deze task
-        sf_id = _safe_id(f"sf{i}", "SF")
-        ET.SubElement(proc, _qname(BPMN_NS, "sequenceFlow"),
-                      {"id": sf_id, "sourceRef": prev_id, "targetRef": tid})
-        prev_id = tid
         tasks_meta.append({"id": tid, "name": t["name"], "source": t["source"]})
 
-    # End event + final sf
-    end_id = _safe_id("end", "EE")
-    ET.SubElement(proc, _qname(BPMN_NS, "endEvent"),
-                  {"id": end_id, "name": "Einde"})
-    ET.SubElement(proc, _qname(BPMN_NS, "sequenceFlow"),
-                  {"id": _safe_id("sfEnd", "SF"),
-                   "sourceRef": prev_id, "targetRef": end_id})
+    # --- EndEvent (met incoming ref)
+    ee = ET.SubElement(proc, _qname(BPMN_NS, "endEvent"), {"id": end_id})
+    ET.SubElement(ee, _qname(BPMN_NS, "incoming")).text = flow_ids[-1]
 
-    # DI-layout: horizontaal, 160px per node
-    plane_id = _safe_id("plane", "Pl")
+    # --- Sequence flows
+    for i, fid in enumerate(flow_ids):
+        ET.SubElement(proc, _qname(BPMN_NS, "sequenceFlow"), {
+            "id": fid,
+            "sourceRef": node_chain[i],
+            "targetRef": node_chain[i + 1],
+        })
+
+    # --- DI-layout: pool rondom het hele proces, horizontaal
     di_root = ET.SubElement(defs, _qname(DI_NS, "BPMNDiagram"),
-                            {"id": _safe_id("diag", "Di")})
+                            {"id": "BPMNDiagram_1"})
     plane = ET.SubElement(di_root, _qname(DI_NS, "BPMNPlane"),
-                          {"id": plane_id, "bpmnElement": proc_id})
+                          {"id": "BPMNPlane_1", "bpmnElement": coll_id})
 
-    def add_shape(ref, x, y, w, h, is_marker=False):
-        sh = ET.SubElement(plane, _qname(DI_NS, "BPMNShape"),
-                           {"id": _safe_id("s", "Shape"), "bpmnElement": ref})
+    def add_shape(ref, x, y, w, h, is_marker=False,
+                  is_horizontal=False, with_label=True):
+        attrs = {"id": f"{ref}_di", "bpmnElement": ref}
+        if is_horizontal:
+            attrs["isHorizontal"] = "true"
         if is_marker:
-            sh.set("isMarkerVisible", "true")
-        b = ET.SubElement(sh, _qname(DC_NS, "Bounds"),
-                          {"x": str(x), "y": str(y),
-                           "width": str(w), "height": str(h)})
+            attrs["isMarkerVisible"] = "true"
+        sh = ET.SubElement(plane, _qname(DI_NS, "BPMNShape"), attrs)
+        ET.SubElement(sh, _qname(DC_NS, "Bounds"), {
+            "x": str(x), "y": str(y), "width": str(w), "height": str(h)
+        })
+        if with_label:
+            ET.SubElement(sh, _qname(DI_NS, "BPMNLabel"))
         return sh
 
-    def add_edge(ref, x1, y1, x2, y2):
-        attrs = {"id": _safe_id("e", "Edge")}
-        if ref:
-            attrs["bpmnElement"] = ref
-        e = ET.SubElement(plane, _qname(DI_NS, "BPMNEdge"), attrs)
-        ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
-                      {"x": str(x1), "y": str(y1)})
-        ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
-                      {"x": str(x2), "y": str(y2)})
+    def add_edge(ref, waypoints):
+        e = ET.SubElement(plane, _qname(DI_NS, "BPMNEdge"),
+                          {"id": f"{ref}_di", "bpmnElement": ref})
+        for (wx, wy) in waypoints:
+            ET.SubElement(e, _qname(DIAG_NS, "waypoint"),
+                          {"x": str(wx), "y": str(wy)})
 
-    x = 80
-    y = 200
-    add_shape(start_id, x, y, 36, 36)
-    prev_center = (x + 18, y + 18)
-    x += 90
-    for t in tasks_meta:
-        add_shape(t["id"], x, y - 12, 140, 60)
-        task_center_left = (x, y + 18)
-        add_edge(None, prev_center[0], prev_center[1],
-                 task_center_left[0], task_center_left[1])
-        prev_center = (x + 140, y + 18)
-        x += 180
-    add_shape(end_id, x, y, 36, 36)
-    add_edge(None, prev_center[0], prev_center[1], x, y + 18)
+    # Bereken afmetingen voor de pool
+    pool_margin_x = 160
+    step = 160
+    content_width = 36 + (len(task_items) * step) + 36 + 40  # start + tasks + end
+    pool_width = max(pool_margin_x + content_width + 60, 600)
+    pool_height = 252
 
-    # DataObjects onderaan
-    dx = 80
-    for ent, dor_id in data_obj_ids:
-        add_shape(dor_id, dx, y + 100, 36, 50)
-        dx += 120
+    pool_x = 160
+    pool_y = 80
+    # Pool-shape
+    add_shape(part_id, pool_x, pool_y, pool_width, pool_height,
+              is_horizontal=True)
 
-    # Serialize
-    tree = ET.ElementTree(defs)
+    # StartEvent
+    y_mid = pool_y + pool_height // 2 - 18
+    x = pool_x + 90
+    add_shape(start_id, x, y_mid, 36, 36, with_label=True)
+    start_right = (x + 36, y_mid + 18)
+    x += 36 + 54  # gap tussen start en eerste task
+
+    # Tasks: 100x80
+    task_centers = []  # (left_center, right_center)
+    for tid in task_ids:
+        add_shape(tid, x, y_mid - 22, 100, 80)
+        task_centers.append(((x, y_mid + 18), (x + 100, y_mid + 18)))
+        x += 100 + 60  # gap tussen tasks
+
+    # EndEvent
+    x_end = x - 24  # compensate last gap
+    add_shape(end_id, x_end, y_mid, 36, 36)
+    end_left = (x_end, y_mid + 18)
+
+    # Edges
+    prev_right = start_right
+    for i, (lc, rc) in enumerate(task_centers):
+        add_edge(flow_ids[i], [prev_right, lc])
+        prev_right = rc
+    add_edge(flow_ids[-1], [prev_right, end_left])
+
+    # DataObjects onder de pool
+    if data_obj_ids:
+        dy = pool_y + pool_height + 30
+        dx = pool_x + 20
+        for ent, dor_id in data_obj_ids:
+            add_shape(dor_id, dx, dy, 36, 50)
+            dx += 120
+
     buf = io.BytesIO()
-    tree.write(buf, xml_declaration=True, encoding="UTF-8")
+    ET.ElementTree(defs).write(buf, xml_declaration=True, encoding="UTF-8")
     return buf.getvalue(), tasks_meta
 
 
