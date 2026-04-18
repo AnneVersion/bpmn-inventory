@@ -567,6 +567,50 @@ a:hover { text-decoration: underline; }
     font-family: "Consolas", ui-monospace, monospace;
 }
 
+.erd-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+.erd-toolbar .btn-primary { margin-top: 0; }
+
+.attr-editor-table tr.quick-add-row {
+    background: #fff7e6;
+}
+.attr-editor-table tr.quick-add-row td {
+    padding: 6px 8px;
+    border-top: 2px dashed var(--warn);
+}
+.attr-editor-table tr.quick-add-row input,
+.attr-editor-table tr.quick-add-row select {
+    padding: 4px 8px;
+    font-size: .85rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+}
+.attr-editor-table tr.new-attr-row td {
+    padding: 6px 8px;
+}
+.attr-editor-table tr.new-attr-row input,
+.attr-editor-table tr.new-attr-row select {
+    padding: 4px 8px;
+    font-size: .85rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    width: 100%;
+    box-sizing: border-box;
+}
+.entity-modal #new-ent-name {
+    width: 100%;
+    padding: 10px 14px;
+    font-size: 1rem;
+}
+
 .sec-class-table { margin-top: 10px; }
 .sec-class-table td small { color: var(--muted); }
 

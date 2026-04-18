@@ -182,11 +182,18 @@
     <!-- ================== TAB: ERD ================== -->
     <section class="tab-panel" data-panel="erd">
         {% if summary.mermaid_erd %}
-            <p class="lead">
-                Bedrijfsdatamodel afgeleid uit <strong>{{ summary.erd.entities|length }}</strong>
-                entities en <strong>{{ summary.erd.relationships|length }}</strong> relaties.
-                Cardinaliteit (Crow's Foot) inferred uit task-I/O; attributen uit
-                user-dictionary + ingebouwde vocabulary.
+            <div class="erd-toolbar">
+                <p class="lead" style="margin:0; flex:1;">
+                    Bedrijfsdatamodel afgeleid uit <strong>{{ summary.erd.entities|length }}</strong>
+                    entities en <strong>{{ summary.erd.relationships|length }}</strong> relaties.
+                </p>
+                <button type="button" class="btn-primary"
+                        onclick="openNewEntityModal()">
+                    + Nieuwe entiteit
+                </button>
+            </div>
+            <p class="viewer-hint">
+                Klik op een entity of relatie voor definitie &middot; hover voor snel-info.
             </p>
             <div class="mermaid-wrap">
                 <pre class="mermaid" id="mermaid-erd">{{ summary.mermaid_erd }}</pre>
@@ -769,11 +776,14 @@ function renderEntityModal(entityName, erdEntity, info, allRels) {
         'Definitie opslaan</button>' +
 
       '<h3 style="margin-top:18px;">Attributen</h3>' +
-      '<table class="data-table attr-editor-table">' +
+      '<table class="data-table attr-editor-table" id="existing-attr-table">' +
         '<thead><tr>' +
           '<th>Naam</th><th>Type</th><th>Flags</th><th>Definitie</th>' +
         '</tr></thead><tbody>' + attrsRows + '</tbody>' +
       '</table>' +
+      '<button type="button" class="btn-secondary" style="margin-top:6px;" ' +
+        'onclick="addQuickAttrRow(\'' + escapeAttr(entityName) + '\')">' +
+        '+ Attribuut toevoegen</button>' +
 
       '<h3 style="margin-top:18px;">Lifecycle</h3>' +
       '<div class="lc-row">' +
@@ -825,6 +835,182 @@ function wireModalButtons(entityName) {
                                        btn.getAttribute('data-b'));
         });
     });
+}
+
+window.addQuickAttrRow = function(entityName) {
+    var tbody = document.querySelector('#existing-attr-table tbody');
+    if (!tbody) return;
+    var row = document.createElement('tr');
+    row.className = 'quick-add-row';
+    row.innerHTML =
+      '<td><input type="text" class="qa-name" placeholder="naam" ' +
+        'style="padding:4px 8px; font-family:Consolas,monospace;"></td>' +
+      '<td><select class="qa-type">' +
+        ['string','number','date','boolean','enum']
+          .map(function(t){ return '<option value="'+t+'">'+t+'</option>'; })
+          .join('') +
+        '</select></td>' +
+      '<td><label style="font-size:.75rem;">' +
+        '<input type="checkbox" class="qa-req"> req</label> ' +
+        '<label style="font-size:.75rem;"><input type="checkbox" class="qa-uni"> uniek</label></td>' +
+      '<td>' +
+        '<input type="text" class="qa-def" placeholder="betekenis..." style="width:calc(100% - 80px);">' +
+        '<button class="btn-save-attr btn-save-quick" style="margin-left:4px;">Opslaan</button>' +
+      '</td>';
+    tbody.appendChild(row);
+    row.querySelector('.qa-name').focus();
+
+    row.querySelector('.btn-save-quick').addEventListener('click', async function() {
+        var name = row.querySelector('.qa-name').value.trim();
+        if (!name) { alert('Geef een naam op'); return; }
+        var type = row.querySelector('.qa-type').value;
+        var req = row.querySelector('.qa-req').checked;
+        var uni = row.querySelector('.qa-uni').checked;
+        var def = row.querySelector('.qa-def').value.trim();
+
+        // Eerst attribuut (upsert via attribute-definition, dan type via object-upsert-merge)
+        // Simpelst: roep /definitions/object aan met gecombineerde lijst.
+        var infoRes = await fetch('/definitions/entity-info/' +
+            encodeURIComponent(entityName));
+        var info = await infoRes.json();
+        var attrs = (info.attributes || []).slice();
+        // Voeg nieuwe toe (als nog niet bestaat)
+        if (!attrs.find(function(a){return a.name===name;})) {
+            attrs.push({
+                name: name, type: type,
+                required: req, unique: uni,
+                definition: def
+            });
+        }
+        await fetch('/definitions/object', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: entityName, attributes: attrs })
+        });
+        flashButton(this, 'Opgeslagen');
+        // Vervang rij door gewone (niet-editable tenzij user weer klikt)
+        setTimeout(function(){
+            // Herlaad de modal om gemerged weer te geven
+            window.showEntityModal(entityName);
+        }, 600);
+    });
+};
+
+window.openNewEntityModal = function openNewEntityModal() {
+    var modal = document.getElementById('entity-modal');
+    var body = document.getElementById('entity-modal-body');
+    modal.style.display = 'flex';
+    body.innerHTML =
+      '<h2>Nieuwe entiteit toevoegen</h2>' +
+      '<p class="viewer-hint" style="margin-top:0;">' +
+        'Voeg direct een nieuwe entity toe aan het datamodel. ' +
+        'De entity verschijnt na analyse-herstart in het ERD.' +
+      '</p>' +
+      '<h3>Naam</h3>' +
+      '<input type="text" id="new-ent-name" placeholder="bv. Lid, Organisatie, Factuur" ' +
+        'style="font-size:1rem; padding:10px 14px;">' +
+      '<h3 style="margin-top:14px;">Definitie</h3>' +
+      '<textarea id="new-ent-def" rows="2" ' +
+        'placeholder="Zakelijke betekenis..."></textarea>' +
+      '<h3 style="margin-top:14px;">Attributen</h3>' +
+      '<table class="data-table attr-editor-table" id="new-ent-attrs"><thead>' +
+        '<tr><th>Naam</th><th>Type</th><th>Vereist</th><th>Uniek</th><th>Definitie</th><th></th></tr>' +
+      '</thead><tbody>' +
+        newAttrRow() +
+      '</tbody></table>' +
+      '<button type="button" class="btn-secondary" style="margin-top:6px;" ' +
+        'onclick="addNewAttrRow()">+ Attribuut toevoegen</button>' +
+      '<div class="modal-actions" style="margin-top:18px;">' +
+        '<button type="button" class="btn-secondary" onclick="closeEntityModal()">Annuleren</button>' +
+        '<button type="button" class="btn-primary" id="btn-save-new-ent">Opslaan</button>' +
+      '</div>';
+
+    setTimeout(function(){ document.getElementById('new-ent-name').focus(); }, 50);
+    document.getElementById('btn-save-new-ent').onclick = saveNewEntity;
+};
+
+function newAttrRow(vals) {
+    vals = vals || {};
+    var typeOpts = ['string','number','date','boolean','enum']
+        .map(function(t){
+          return '<option value="' + t + '"' +
+                 ((vals.type||'string') === t ? ' selected' : '') + '>' +
+                 t + '</option>';
+        }).join('');
+    return '<tr class="new-attr-row">' +
+             '<td><input type="text" class="na-name" placeholder="naam" value="' +
+               escapeAttr(vals.name||'') + '"></td>' +
+             '<td><select class="na-type">' + typeOpts + '</select></td>' +
+             '<td style="text-align:center;"><input type="checkbox" class="na-req"' +
+               (vals.required?' checked':'') + '></td>' +
+             '<td style="text-align:center;"><input type="checkbox" class="na-uni"' +
+               (vals.unique?' checked':'') + '></td>' +
+             '<td><input type="text" class="na-def" placeholder="betekenis..." value="' +
+               escapeAttr(vals.definition||'') + '"></td>' +
+             '<td style="text-align:center;">' +
+               '<button type="button" class="btn-icon" onclick="this.closest(\'tr\').remove()" title="Verwijder">&times;</button>' +
+             '</td>' +
+           '</tr>';
+}
+
+window.addNewAttrRow = function() {
+    var tbody = document.querySelector('#new-ent-attrs tbody');
+    tbody.insertAdjacentHTML('beforeend', newAttrRow());
+    var last = tbody.lastElementChild;
+    last.querySelector('.na-name')?.focus();
+};
+
+async function saveNewEntity() {
+    var name = document.getElementById('new-ent-name').value.trim();
+    var def  = document.getElementById('new-ent-def').value.trim();
+    if (!name) { alert('Geef een naam op'); return; }
+
+    // Verzamel attributen
+    var attrs = Array.from(document.querySelectorAll('#new-ent-attrs .new-attr-row'))
+      .map(function(row) {
+        return {
+            name: row.querySelector('.na-name').value.trim(),
+            type: row.querySelector('.na-type').value,
+            required: row.querySelector('.na-req').checked,
+            unique: row.querySelector('.na-uni').checked,
+            definition: row.querySelector('.na-def').value.trim(),
+        };
+      })
+      .filter(function(a){ return a.name; });
+
+    var btn = document.getElementById('btn-save-new-ent');
+    btn.disabled = true; btn.textContent = 'Bezig...';
+
+    // Upsert object (naam + attributen)
+    var r = await fetch('/definitions/object', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: name, attributes: attrs })
+    });
+    if (!r.ok) { alert('Fout bij opslaan'); btn.disabled = false; btn.textContent='Opslaan'; return; }
+
+    // Zet ook definitie
+    if (def) {
+        await fetch('/definitions/entity-definition', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: name, definition: def })
+        });
+    }
+
+    btn.textContent = 'Opgeslagen!';
+    setTimeout(function(){
+        closeEntityModal();
+        // Re-analyse van het project zodat nieuwe entity in ERD verschijnt
+        var isProject = {{ 'true' if summary.is_project else 'false' }};
+        if (isProject) {
+            var pid = {{ (summary.project_id or summary.sid)|tojson }};
+            var form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/project/' + pid + '/analyze';
+            document.body.appendChild(form);
+            form.submit();
+        } else {
+            window.location.reload();
+        }
+    }, 800);
 }
 
 window.openRelationEditor = async function openRelationEditor(a, b) {
