@@ -1990,17 +1990,45 @@ function escapeHtml(s) {
                 var change = list[i];
                 el.addEventListener('click', function (ev) {
                     ev.stopPropagation();
-                    // Zoek de finding die bij deze change hoort
+                    // Zoek de finding die bij deze change hoort. source_file-
+                    // check is losser: het kan 'v1.bpmn' of de display-naam
+                    // zijn, afhankelijk van welke backend-versie de summary
+                    // heeft geschreven. Matching op rule + element_id is
+                    // voldoende uniek binnen 1 bestand.
                     var f = findings.find(function (fi) {
                         return fi.rule === change.rule &&
-                               fi.source_file === fileName &&
-                               fi.element_id === change.highlight_task_id;
+                               fi.element_id === change.highlight_task_id &&
+                               (!fi.source_file || !fileName ||
+                                fi.source_file === fileName ||
+                                fi.source_file === 'v1.bpmn' ||
+                                fi.source_file.endsWith(fileName));
                     });
                     if (!f) {
-                        // Fallback: bouw een synthetische finding vanuit change-data
-                        alert('Bijbehorende finding niet gevonden in active review — ' +
-                              'mogelijk al toegepast. Herlaad de pagina.');
-                        return;
+                        // Synthetische finding vanuit change-data — genoeg
+                        // voor dispatchApply om de juiste parameters te sturen.
+                        f = {
+                            rule: change.rule,
+                            element_id: change.highlight_task_id,
+                            element_name: change.element,
+                            rule_title: change.description,
+                            suggested_object: change.suggested_object || '',
+                            action_type: change.action_type || '',
+                            suggested_attributes: change.suggested_attributes || [],
+                            fix_type: change.rule === 'R101' ? 'r101_add_dataobject'
+                                    : change.rule === 'R102' ? 'r102_add_datastore'
+                                    : 'auto',
+                            fix_params: change.fix_params || {},
+                            fixable: true,
+                            source_file: fileName,
+                        };
+                        // R101 heeft suggested_object nodig om dispatchApply te laten werken
+                        if (f.rule === 'R101' && !f.suggested_object) {
+                            // Probeer uit description te halen: <bpmn:dataObject name="X">
+                            var m = (change.description || '').match(/name="([^"]+)"/);
+                            if (m) f.suggested_object = m[1];
+                            var am = (change.highlight_label || '').match(/\(([A-Z]+)\)/);
+                            if (am) f.action_type = am[1];
+                        }
                     }
                     dispatchApply(f, fileName);
                 });

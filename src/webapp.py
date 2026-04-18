@@ -474,13 +474,16 @@ def project_improved_bpmn(pid: str, filename: str):
     user_defs = bpmn_defs.load(ROOT)
     import bpmn_parser as _bp
     parsed = _bp.parse_bpmn(source)
+    # Forceer source_file op de display-filename, zodat preview-findings
+    # dezelfde source_file hebben als de live findings in summary.json.
+    parsed.source_file = safe
     from merger import merge as _merge
     model = _merge([parsed])
     findings = review(model, user_defs=user_defs)
 
     try:
         xml_bytes, _changes = bpmn_apply.build_improved_preview(
-            source, findings, user_defs
+            source, findings, user_defs, display_filename=safe
         )
     except Exception as e:
         return f"Preview-fout: {e}", 500
@@ -504,12 +507,13 @@ def project_improved_summary(pid: str, filename: str):
     user_defs = bpmn_defs.load(ROOT)
     import bpmn_parser as _bp
     parsed = _bp.parse_bpmn(source)
+    parsed.source_file = safe
     from merger import merge as _merge
     model = _merge([parsed])
     findings = review(model, user_defs=user_defs)
     try:
         _xml, changes = bpmn_apply.build_improved_preview(
-            source, findings, user_defs
+            source, findings, user_defs, display_filename=safe
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1595,14 +1599,16 @@ def _findings_for_original(sdir: Path, safe_filename: str,
     Zo blijft de preview consistent: hij toont altijd wat er zou zijn
     als je vanaf v1 alle safe auto-fixes toepast, niet 'wat er nog
     moet nadat je al een paar fixes hebt gedaan'.
+
+    source_file wordt op de DISPLAY-naam gezet (niet v1.bpmn), zodat
+    frontend-matching tussen preview-changes en actieve findings werkt.
     """
     v1 = _resolve_source_file(sdir, safe_filename)
     if v1 is None:
         return []
-    # Parse alleen deze ene file via parse_bpmn
     import bpmn_parser as _bp
     parsed = _bp.parse_bpmn(v1)
-    # Minimal model-stub zodat cross-BPMN findings geen zin hebben (enkel 1 file)
+    parsed.source_file = safe_filename   # display-naam, niet v1.bpmn
     from merger import merge
     model = merge([parsed])
     findings = review(model, user_defs=user_defs)
@@ -1624,7 +1630,7 @@ def session_improved_bpmn(sid: str, filename: str):
     findings = _findings_for_original(sdir, safe, user_defs)
     try:
         xml_bytes, _changes = bpmn_apply.build_improved_preview(
-            source, findings, user_defs
+            source, findings, user_defs, display_filename=safe
         )
     except Exception as e:
         return f"Preview-fout: {e}", 500
@@ -1647,7 +1653,7 @@ def session_improved_summary(sid: str, filename: str):
     findings = _findings_for_original(sdir, safe, user_defs)
     try:
         _xml, changes = bpmn_apply.build_improved_preview(
-            source, findings, user_defs
+            source, findings, user_defs, display_filename=safe
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500

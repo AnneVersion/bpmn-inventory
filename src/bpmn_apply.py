@@ -360,6 +360,7 @@ def build_improved_preview(
     bpmn_path: Path,
     findings: list[dict],
     user_defs: dict | None = None,
+    display_filename: str | None = None,
 ) -> tuple[bytes, list[dict]]:
     """Genereer een 'BPMN volgens de regels' preview door alle *veilige*
     auto-fixes toe te passen op een kopie van de XML. Retourneert
@@ -381,11 +382,16 @@ def build_improved_preview(
     root = tree.getroot()
     changes: list[dict] = []
 
+    # Welke source_file verwachten we in de findings? Bij standalone BPMN
+    # is dat bpmn_path.name. Bij v1-based previews passen we display_filename
+    # mee (omdat de findings dat als source_file hebben).
+    expected_source = display_filename or bpmn_path.name
+
     # R007 eerst (simpelste structuurwijziging)
     for f in findings:
         if f.get("rule") != "R007":
             continue
-        if f.get("source_file") != bpmn_path.name:
+        if f.get("source_file") != expected_source:
             continue
         gw_id = f.get("element_id", "")
         if not gw_id:
@@ -406,7 +412,7 @@ def build_improved_preview(
     for f in findings:
         if f.get("rule") != "R101":
             continue
-        if f.get("source_file") != bpmn_path.name:
+        if f.get("source_file") != expected_source:
             continue
         if not f.get("fixable") or not f.get("suggested_object"):
             continue
@@ -430,7 +436,7 @@ def build_improved_preview(
     for f in findings:
         if f.get("rule") != "R102":
             continue
-        if f.get("source_file") != bpmn_path.name:
+        if f.get("source_file") != expected_source:
             continue
         params = f.get("fix_params", {}) or {}
         task_id = params.get("task_id") or f.get("element_id", "")
