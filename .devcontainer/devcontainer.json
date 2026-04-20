@@ -1,0 +1,39 @@
+{
+  "name": "BPMN Inventory",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  "forwardPorts": [8095],
+  "portsAttributes": {
+    "8095": {
+      "label": "BPMN Inventory webapp",
+      "onAutoForward": "openPreview",
+      "visibility": "private"
+    }
+  },
+
+  "postCreateCommand": "pip install --user -r requirements.txt",
+
+  "postAttachCommand": {
+    "server": "python src/webapp.py"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "bierner.markdown-mermaid"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  "remoteUser": "vscode"
+}

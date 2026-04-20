@@ -15,11 +15,22 @@ de BPMN-XML is afgeleid.
 Vereist: Python 3.10+
 
 ```bash
-pip install openpyxl python-docx
+pip install -r requirements.txt
 ```
 
 Dat is alles. De parser gebruikt alleen de standard library
 (`xml.etree.ElementTree`).
+
+### Draaien in GitHub Codespaces (geen lokale setup)
+
+1. Open de repo op GitHub → knop **Code → Codespaces → Create codespace**.
+2. De Codespace start vanaf `.devcontainer/devcontainer.json`: Python 3.12,
+   `pip install -r requirements.txt` draait automatisch bij first-boot, en
+   `python src/webapp.py` start na attach. Port 8095 wordt doorgestuurd en
+   opent direct een preview-tab.
+3. Projecten en output landen in `output/` binnen de Codespace. Die
+   verdwijnen als de Codespace wordt opgeruimd — commit belangrijke
+   handmade-assets (`output/handmade/`) naar Git als je ze wilt bewaren.
 
 ## Mappenstructuur
 
