@@ -3,6 +3,46 @@
 {% block title %}Procesregister - {{ project.name }}{% endblock %}
 
 {% block content %}
+<style>
+  .origin-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .origin-upload     { background:#dee2e6; color:#495057; }
+  .origin-skeleton   { background:#fff3cd; color:#856404; }
+  .origin-word       { background:#cfe9ff; color:#0050a0; }
+  .origin-powerpoint { background:#ffd7c2; color:#a04100; }
+  .origin-unknown    { background:#f8d7da; color:#721c24; }
+
+  .anchor-badge { display:inline-block; padding:2px 6px; border-radius:4px; font-size:10px;
+                  background:#e8d7ff; color:#4a1c75; font-weight:600; margin-left:6px; }
+  .anchor-badge:hover { cursor:help; }
+
+  .inspect-overlay {
+    position: fixed; top:0; right:0; width:680px; height:100vh;
+    background:#fff; border-left:1px solid #ccc; box-shadow:-4px 0 12px rgba(0,0,0,0.12);
+    overflow-y:auto; z-index:200; display:none; padding: 0;
+  }
+  .inspect-overlay.open { display:block; }
+  .inspect-overlay header {
+    padding:12px 20px; background:#1d1d1f; color:#fff; display:flex;
+    justify-content:space-between; align-items:center;
+  }
+  .inspect-overlay header h2 { margin:0; font-size:16px; }
+  .inspect-overlay header button {
+    background:transparent; border:1px solid #777; color:#fff; padding:4px 12px; cursor:pointer; border-radius:4px;
+  }
+  .inspect-section { padding: 14px 20px; border-bottom:1px solid #eee; }
+  .inspect-section h3 { margin:0 0 8px; font-size:13px; text-transform:uppercase; color:#666; letter-spacing:.4px; }
+  .inspect-meta dt { font-weight:600; color:#333; font-size:12px; margin-top:6px; }
+  .inspect-meta dd { margin:0 0 4px 0; font-size:13px; color:#555; }
+  .inspect-diagram { width:100%; height:340px; border:1px solid #ddd; border-radius:6px; background:#fafafa; margin-top:6px; }
+  .inspect-mermaid { background:#fafafa; padding:10px; border:1px solid #ddd; border-radius:6px; margin-top:6px; }
+  .inspect-empty { color:#999; font-style:italic; padding:8px 0; }
+  .inspect-link { color:#0066cc; font-size:12px; margin-left:6px; }
+  .inspect-anchor { padding:6px 10px; margin:4px 0; background:#fafafa; border-radius:4px; border-left:3px solid #8052b6; font-size:12px; }
+  .inspect-anchor strong { color:#4a1c75; }
+  .inspect-anchor .reason { color:#666; font-size:11px; margin-top:2px; display:block; }
+  tr.clickable { cursor:pointer; }
+  tr.clickable:hover { background:#f0f7ff; }
+</style>
 <section>
     <a href="{{ url_for('project_detail', pid=project.id) }}" class="btn-secondary">&larr; Naar project</a>
     <h1>📋 Procesregister van {{ project.name }}</h1>
@@ -11,6 +51,30 @@
         De tool matcht ze tegen de geüploade BPMNs en laat zien welke nog
         ontbreken of extra zijn.
     </p>
+</section>
+
+<section class="csv-upload-box" style="background:#f4f8ff; border:1px solid #cfe0ff; border-radius:8px; padding:16px; margin-bottom:16px;">
+    <h2 style="margin-top:0;">📤 Of upload een CSV-proceslijst</h2>
+    <p style="margin:4px 0 12px 0;">De tool herkent automatisch de veldnamen (code, naam, eigenaar, doel, ...) en vult hieronder de verwachte processen in.</p>
+    <form id="csv-upload-form" enctype="multipart/form-data" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <input type="file" name="file" accept=".csv,.tsv,.txt" required>
+        <label style="display:flex; gap:6px; align-items:center;">
+            <input type="checkbox" name="apply" value="true" checked>
+            Direct toepassen (vervangt bestaande lijst)
+        </label>
+        <button type="submit" class="btn-primary">Upload &amp; herken velden</button>
+    </form>
+    <div id="csv-upload-result" style="margin-top:12px;"></div>
+
+    <div id="csv-mapping-editor" style="display:none; margin-top:14px; padding:12px; background:#fff; border:1px solid #ccc; border-radius:6px;">
+        <h3 style="margin-top:0;">Veldmapping (correctie mogelijk)</h3>
+        <p style="margin:4px 0 10px; font-size:13px; color:#555;">De tool heeft onderstaande mapping gedetecteerd. Pas aan als een kolom verkeerd is toegewezen, en klik daarna op <em>Mapping opslaan</em>.</p>
+        <table id="mapping-table" class="data-table" style="width:100%;">
+            <thead><tr><th>CSV-kolom</th><th>Canoniek veld</th></tr></thead>
+            <tbody></tbody>
+        </table>
+        <button id="mapping-save" class="btn-secondary" style="margin-top:10px;">Mapping opslaan &amp; herverwerk CSV</button>
+    </div>
 </section>
 
 <section>
@@ -23,19 +87,39 @@
 </section>
 
 {% if expected %}
+<section style="margin-top:16px;">
+    <h2>🧬 Datamodel — welke entiteiten + waar komen ze vandaan</h2>
+    <p style="font-size:12px; color:#666;">Per entiteit: uit welke processen / BPMNs is hij afgeleid? Klik op een rij voor details.</p>
+    <button id="btn-entity-sources" class="btn-secondary">Toon entiteit-bronnen</button>
+    <div id="entity-sources-result" style="margin-top:10px;"></div>
+</section>
+
+<section style="margin-top:16px;">
+    <h2>🧩 Automatische BPMN-matching</h2>
+    <p>Match elk verwacht proces aan een bestaand BPMN-bestand op basis van naam + code.</p>
+    <button id="btn-match-bpmns" class="btn-secondary">Automatisch matchen</button>
+    <button id="btn-generate-skeletons" class="btn-secondary" style="margin-left:8px;">Genereer ontbrekende skeletons</button>
+    <div id="match-result" style="margin-top:12px;"></div>
+</section>
+{% endif %}
+
+{% if expected %}
 <section style="margin-top:24px;">
     <h2>Status per verwacht proces ({{ matched|selectattr('status','equalto','present')|list|length }} / {{ expected|length }} aanwezig)</h2>
+    <p style="font-size:12px; color:#666;">Klik op een rij om oud/nieuw BPMN + ERD in een zijpaneel te bekijken.</p>
     <table class="data-table">
         <thead>
             <tr>
                 <th>Verwacht proces</th>
                 <th style="width:100px;">Status</th>
                 <th>Matched BPMN</th>
+                <th style="width:160px;">Herkomst</th>
             </tr>
         </thead>
         <tbody>
             {% for m in matched %}
-            <tr class="reg-row reg-{{ m.status }}">
+            <tr class="reg-row reg-{{ m.status }} {% if m.bpmn_file %}clickable{% endif %}"
+                {% if m.bpmn_file %}data-bpmn-file="{{ m.bpmn_file }}"{% endif %}>
                 <td>{{ m.expected }}</td>
                 <td>
                     {% if m.status == 'present' %}
@@ -46,9 +130,30 @@
                 </td>
                 <td>
                     {% if m.bpmn_file %}
-                        <code>{{ m.bpmn_file }}</code>
+                        <a href="{{ url_for('project_bpmn_raw', pid=project.id, filename=m.bpmn_file) }}"
+                           onclick="event.stopPropagation();" title="Open raw BPMN">
+                            <code>{{ m.bpmn_file }}</code>
+                        </a>
                     {% else %}
                         <em>Geen BPMN gevonden met deze naam</em>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if m.bpmn_file %}
+                        {% set origin = project.bpmn_origins.get(m.bpmn_file) if project.bpmn_origins else None %}
+                        {% if origin %}
+                            <span class="origin-badge origin-{{ origin.kind }}"
+                                  title="Bron: {{ origin.source }}{% if origin.created_at %} ({{ origin.created_at }}){% endif %}">
+                                {% if origin.kind == 'upload' %}📤 upload
+                                {% elif origin.kind == 'skeleton' %}🤖 skeleton
+                                {% elif origin.kind == 'word' %}📄 Word
+                                {% elif origin.kind == 'powerpoint' %}📊 PPT
+                                {% else %}{{ origin.kind }}
+                                {% endif %}
+                            </span>
+                        {% else %}
+                            <span class="origin-badge origin-unknown">?</span>
+                        {% endif %}
                     {% endif %}
                 </td>
             </tr>
@@ -73,4 +178,426 @@
 </section>
 {% endif %}
 {% endif %}
+
+<!-- Inspectie-paneel: oud/nieuw BPMN + mini-ERD + herkomst + anchors -->
+<aside id="inspect-panel" class="inspect-overlay" aria-hidden="true">
+  <header>
+    <h2 id="inspect-title">BPMN inspectie</h2>
+    <button id="inspect-close">Sluiten ✕</button>
+  </header>
+  <div class="inspect-section">
+    <h3>Herkomst</h3>
+    <dl id="inspect-origin" class="inspect-meta"></dl>
+  </div>
+  <div class="inspect-section">
+    <h3>Actieve BPMN <a id="inspect-raw-link" class="inspect-link" target="_blank">→ open volledig</a></h3>
+    <div id="inspect-new" class="inspect-diagram"></div>
+  </div>
+  <div class="inspect-section">
+    <h3>Eerder versie (v1 / origineel)</h3>
+    <div id="inspect-old" class="inspect-diagram"></div>
+    <p id="inspect-old-note" class="inspect-empty"></p>
+  </div>
+  <div class="inspect-section">
+    <h3>ERD (mini) <a id="inspect-erd-link" class="inspect-link" href="#">→ volledige ERD</a></h3>
+    <div id="inspect-erd" class="inspect-mermaid"></div>
+  </div>
+  <div class="inspect-section">
+    <h3>Relevante ankerobjecten</h3>
+    <div id="inspect-anchors"></div>
+  </div>
+  <div class="inspect-section" id="inspect-sources-section">
+    <h3>📚 Bronnen geraadpleegd (Word / PowerPoint)</h3>
+    <div id="inspect-sources"></div>
+  </div>
+  <div class="inspect-section" id="inspect-changes-section">
+    <h3>🔄 Wijzigingen met bron-citaat</h3>
+    <div id="inspect-changes"></div>
+  </div>
+</aside>
+
+<style>
+  .src-card { padding:10px 12px; margin:8px 0; background:#f9f9fb; border:1px solid #e0e0e0; border-radius:6px; }
+  .src-card .src-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .src-card .src-type { padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .src-type-word { background:#cfe9ff; color:#0050a0; }
+  .src-type-powerpoint { background:#ffd7c2; color:#a04100; }
+  .src-card .src-section { font-size:12px; color:#666; margin-top:2px; }
+  .src-card .src-fields { margin-top:6px; font-size:12px; }
+  .src-card .src-fields dt { font-weight:600; color:#333; margin-top:4px; }
+  .src-card .src-fields dd { margin:0 0 2px 0; color:#555; }
+  .src-card .src-preview {
+    max-height:140px; overflow:auto; margin-top:6px; padding:6px 8px;
+    background:#fff; border:1px solid #ddd; border-radius:4px;
+    font-family:Consolas, monospace; font-size:11px; white-space:pre-wrap;
+  }
+  .src-card .src-open { color:#0066cc; font-size:11px; margin-left:8px; }
+  .change-card { padding:8px 10px; margin:6px 0; background:#f1f8ff; border-left:3px solid #0066cc; border-radius:4px; font-size:12px; }
+  .change-card .ch-what { font-weight:600; color:#003a7a; }
+  .change-card .ch-regel { display:inline-block; padding:1px 6px; background:#003a7a; color:#fff; border-radius:3px; font-size:10px; margin-left:6px; }
+  .change-card .ch-quote { font-style:italic; color:#555; margin-top:4px; padding-left:8px; border-left:2px solid #aac; }
+  .change-card .ch-src { font-size:11px; color:#888; margin-top:3px; }
+</style>
+
+<script src="https://unpkg.com/bpmn-js@17.11.1/dist/bpmn-viewer.development.js"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  window.__mermaid = mermaid;
+  mermaid.initialize({ startOnLoad: false, theme: "default" });
+</script>
+
+<script>
+(function(){
+  const pid = "{{ project.id }}";
+  const form = document.getElementById('csv-upload-form');
+  const result = document.getElementById('csv-upload-result');
+  const editor = document.getElementById('csv-mapping-editor');
+  const mappingTbody = document.querySelector('#mapping-table tbody');
+
+  const CANONICAL = ["code","kern","hoofdproces","subproces","deelproces","naam","doel","link",
+                     "eigenaar","sme","betrokken","opmerkingen","kennishouders","status",
+                     "trigger","resultaat","actoren","systemen","kanalen","prioriteit","(negeren)"];
+
+  function renderMapping(info, schemaRaw){
+    // Toon alle CSV-kolommen uit info.mapping + onbemapte kolommen
+    mappingTbody.innerHTML = '';
+    const allCols = [];
+    Object.keys(info.mapping || {}).forEach(k => allCols.push({col: k, canon: info.mapping[k]}));
+    (info.unmapped_columns || []).forEach(k => allCols.push({col: k, canon: ''}));
+
+    allCols.forEach(m => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><code>'+escapeHtml(m.col)+'</code></td>' +
+        '<td><select data-col="'+escapeHtml(m.col)+'">' +
+        CANONICAL.map(c => '<option value="'+c+'" '+(c===m.canon?'selected':'')+'>'+c+'</option>').join('') +
+        '</select></td>';
+      mappingTbody.appendChild(tr);
+    });
+    editor.style.display = 'block';
+  }
+
+  function escapeHtml(s){
+    return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    result.innerHTML = '<em>Uploaden en analyseren…</em>';
+    try {
+      const r = await fetch('/project/'+pid+'/upload-csv', {method:'POST', body: fd});
+      const data = await r.json();
+      if (data.error){ result.innerHTML = '<span style="color:#b00">Fout: '+data.error+'</span>'; return; }
+      const m = data.info.mapping || {};
+      const mapLines = Object.entries(m).map(([k,v])=>'<li><code>'+escapeHtml(k)+'</code> → <strong>'+v+'</strong></li>').join('');
+      result.innerHTML =
+        '<div style="background:#e7f5ea; border:1px solid #9ec9a0; border-radius:6px; padding:10px;">' +
+        '<strong>✓ '+data.info.n_rows+' procesregels geparst.</strong><br>' +
+        'Encoding: <code>'+data.info.encoding+'</code>, delimiter: <code>'+data.info.delimiter+'</code>, header-rij: <code>'+data.info.header_row+'</code>.<br>' +
+        'Gedetecteerde mapping: <ul style="margin:4px 0;">'+mapLines+'</ul>' +
+        (data.applied ? 'Lijst met '+data.expected_count+' verwachte processen is toegepast. <a href="">Pagina verversen</a>' :
+                        '<em>Niet toegepast (apply=false).</em>') +
+        '</div>';
+      // Toon mapping-editor zodat user kan corrigeren
+      renderMapping(data.info, data.schema);
+    } catch(err){
+      result.innerHTML = '<span style="color:#b00">Exceptie: '+err.message+'</span>';
+    }
+  });
+
+  // Mapping opslaan -> POST naar apply-mapping endpoint
+  document.getElementById('mapping-save').addEventListener('click', async () => {
+    const selects = document.querySelectorAll('#mapping-table select');
+    const overrides = {};
+    selects.forEach(s => {
+      if (s.value && s.value !== '(negeren)') overrides[s.dataset.col] = s.value;
+    });
+    try {
+      const r = await fetch('/project/'+pid+'/apply-csv-mapping', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({overrides})
+      });
+      const d = await r.json();
+      if (d.error){ alert('Fout: '+d.error); return; }
+      alert('Mapping toegepast. '+d.expected_count+' processen opgeslagen.');
+      location.reload();
+    } catch(err){
+      alert('Exceptie: '+err.message);
+    }
+  });
+
+  // Entity-sources (waar komt elke entiteit vandaan?)
+  const btnES = document.getElementById('btn-entity-sources');
+  const esResult = document.getElementById('entity-sources-result');
+  if (btnES){
+    btnES.addEventListener('click', async () => {
+      esResult.innerHTML = '<em>Laden…</em>';
+      try {
+        const r = await fetch('/project/'+pid+'/entity-sources');
+        const d = await r.json();
+        if (d.error){ esResult.innerHTML = '<span style="color:#b00">Fout: '+d.error+'</span>'; return; }
+        const ents = d.entities || [];
+        const rows = ents.map(e => {
+          const anchor = e.is_anchor ? '<span class="anchor-badge" title="komt in &ge;2 processen voor">anchor</span>' : '';
+          const master = e.is_master ? ' <span class="anchor-badge" style="background:#ffe8a1; color:#8a6400;">master</span>' : '';
+          const aliases = (e.aliases||[]).map(a => '<code style="font-size:11px;">'+esc(a)+'</code>').join(' ');
+          const procs   = (e.source_processes||[]).slice(0,10).map(p => '<code style="font-size:11px;">'+esc(p)+'</code>').join(' ');
+          const more = e.n_processes > 10 ? ' <small>+'+(e.n_processes-10)+' meer</small>' : '';
+          const bpmns = (e.bpmn_sources||[]).slice(0,6).map(b => '<small style="color:#666;">'+esc(b)+'</small>').join('<br>');
+          return '<tr>' +
+            '<td><strong>'+esc(e.name)+'</strong>'+anchor+master+'</td>' +
+            '<td>'+(e.n_processes||0)+'</td>' +
+            '<td>'+(aliases||'<em>geen</em>')+'</td>' +
+            '<td>'+(procs||'<em>geen</em>')+more+'</td>' +
+            '<td>'+(bpmns||'<em>geen bronnen</em>')+'</td>' +
+          '</tr>';
+        }).join('');
+        esResult.innerHTML =
+          '<p><strong>'+ents.length+' entiteiten</strong> afgeleid uit dataObjects, taaknamen, textAnnotations en documentation.</p>' +
+          '<table class="data-table" style="font-size:12px;">' +
+            '<thead><tr><th>Entiteit</th><th>#proc</th><th>Aliassen</th><th>Bron-processen</th><th>Detail (task/annotation-id)</th></tr></thead>' +
+            '<tbody>'+rows+'</tbody></table>';
+      } catch(err){
+        esResult.innerHTML = '<span style="color:#b00">Exceptie: '+err.message+'</span>';
+      }
+    });
+  }
+
+  // BPMN-matching
+  const btnMatch = document.getElementById('btn-match-bpmns');
+  const matchResult = document.getElementById('match-result');
+  if (btnMatch){
+    btnMatch.addEventListener('click', async () => {
+      matchResult.innerHTML = '<em>Matching…</em>';
+      try {
+        const r = await fetch('/project/'+pid+'/match-bpmns', {method:'POST'});
+        const d = await r.json();
+        if (d.error){ matchResult.innerHTML = '<span style="color:#b00">Fout: '+d.error+'</span>'; return; }
+        const hits = d.matches.filter(m => m.best_match).length;
+        const rows = d.matches.map(m => {
+          const bm = m.best_match;
+          const cls = bm ? 'reg-present' : 'reg-missing';
+          const file = bm ? '<code>'+escapeHtml(bm.file)+'</code> <small>(score '+bm.score+')</small>' : '<em>geen match</em>';
+          return '<tr class="reg-row '+cls+'"><td>'+escapeHtml(m.expected)+'</td><td>'+file+'</td><td>'+(bm?bm.why:'')+'</td></tr>';
+        }).join('');
+        matchResult.innerHTML = '<p><strong>'+hits+' / '+d.matches.length+'</strong> gematched aan bestaande BPMN.</p>' +
+          '<table class="data-table"><thead><tr><th>Verwacht</th><th>BPMN</th><th>Reden</th></tr></thead><tbody>'+rows+'</tbody></table>';
+      } catch(err){
+        matchResult.innerHTML = '<span style="color:#b00">Exceptie: '+err.message+'</span>';
+      }
+    });
+  }
+
+  // === Inspectie-paneel (oud/nieuw/ERD) ===
+  const panel = document.getElementById('inspect-panel');
+  const panelTitle = document.getElementById('inspect-title');
+  const panelOrigin = document.getElementById('inspect-origin');
+  const panelNew = document.getElementById('inspect-new');
+  const panelOld = document.getElementById('inspect-old');
+  const panelOldNote = document.getElementById('inspect-old-note');
+  const panelErd = document.getElementById('inspect-erd');
+  const panelAnchors = document.getElementById('inspect-anchors');
+  const panelRawLink = document.getElementById('inspect-raw-link');
+  const panelErdLink = document.getElementById('inspect-erd-link');
+  document.getElementById('inspect-close').addEventListener('click', () => {
+    panel.classList.remove('open');
+    panel.setAttribute('aria-hidden','true');
+  });
+
+  let viewerNew = null, viewerOld = null;
+
+  async function loadBpmnInto(divId, url){
+    const div = document.getElementById(divId);
+    div.innerHTML = '';
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(resp.status);
+      const xml = await resp.text();
+      const v = new BpmnJS({ container: '#'+divId });
+      await v.importXML(xml);
+      v.get('canvas').zoom('fit-viewport', 'auto');
+      return v;
+    } catch(e){
+      div.innerHTML = '<p class="inspect-empty">Kon BPMN niet laden: '+e.message+'</p>';
+      return null;
+    }
+  }
+
+  async function openInspect(filename){
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden','false');
+    panelTitle.textContent = 'BPMN: ' + filename;
+    panelOrigin.innerHTML = '<em>Laden…</em>';
+    panelAnchors.innerHTML = '';
+    panelOldNote.textContent = '';
+    panelRawLink.href = '/project/'+pid+'/bpmn/'+encodeURIComponent(filename);
+    panelErdLink.href = '/project/'+pid+'/results#erd';
+
+    // Metadata ophalen
+    let info = null;
+    try {
+      const r = await fetch('/project/'+pid+'/bpmn-info/'+encodeURIComponent(filename));
+      info = await r.json();
+    } catch(e){
+      panelOrigin.innerHTML = '<em>Kon metadata niet laden.</em>';
+      return;
+    }
+    const o = info.origin || {};
+    panelOrigin.innerHTML =
+      '<dt>Type</dt><dd>'+(o.kind_label || o.kind || 'onbekend')+'</dd>' +
+      (o.source ? '<dt>Bron</dt><dd><code>'+esc(o.source)+'</code></dd>' : '') +
+      (o.source_row ? '<dt>CSV-regel</dt><dd>'+esc(o.source_row)+'</dd>' : '') +
+      (o.source_proces ? '<dt>Word-proces</dt><dd>'+esc(o.source_proces)+'</dd>' : '') +
+      (o.source_tasks && o.source_tasks.length ? '<dt>Taken</dt><dd>'+o.source_tasks.map(esc).join(', ')+'</dd>' : '') +
+      (o.source_doel ? '<dt>Doel</dt><dd>'+esc(o.source_doel)+'</dd>' : '') +
+      (o.source_eigenaar ? '<dt>Eigenaar</dt><dd>'+esc(o.source_eigenaar)+'</dd>' : '') +
+      (o.source_sme ? '<dt>SME</dt><dd>'+esc(o.source_sme)+'</dd>' : '') +
+      (o.created_at ? '<dt>Aangemaakt</dt><dd>'+esc(o.created_at)+'</dd>' : '');
+
+    // Actieve BPMN laden
+    viewerNew = await loadBpmnInto('inspect-new', info.raw_url);
+
+    // Oude versie (v1) zoeken in variants
+    const oldV = (info.variants || []).find(v => v.kind === 'versie' && /v1/i.test(v.filename));
+    if (oldV) {
+      viewerOld = await loadBpmnInto('inspect-old', oldV.url);
+      panelOldNote.textContent = 'Eerdere versie: ' + oldV.filename;
+    } else {
+      panelOld.innerHTML = '';
+      panelOldNote.textContent = 'Geen eerdere versie beschikbaar.';
+    }
+
+    // Mini-ERD: gebruik simpele extract van dataObjects uit de BPMN
+    try {
+      const r = await fetch(info.raw_url);
+      const xml = await r.text();
+      const ents = extractEntitiesFromBpmn(xml);
+      if (ents.length === 0) {
+        panelErd.innerHTML = '<p class="inspect-empty">Geen dataObjects gevonden in deze BPMN.</p>';
+      } else {
+        const mermaidSrc = 'erDiagram\n' + ents.map(e => '    '+e+' { string naam }').join('\n');
+        panelErd.innerHTML = '<pre class="mermaid">'+mermaidSrc+'</pre>';
+        if (window.__mermaid) await window.__mermaid.run({ nodes: panelErd.querySelectorAll('.mermaid') });
+      }
+    } catch(e){
+      panelErd.innerHTML = '<p class="inspect-empty">ERD niet gegenereerd: '+e.message+'</p>';
+    }
+
+    // Bronnen + wijzigingen ophalen (apart endpoint)
+    await loadSources(filename);
+
+    // Anker-entiteiten tonen met reden
+    if (info.anchor_entities && info.anchor_entities.length) {
+      panelAnchors.innerHTML = info.anchor_entities.slice(0, 10).map(a =>
+        '<div class="inspect-anchor">' +
+        '<strong>'+esc(a.name)+'</strong>' +
+        (a.is_master ? ' <span class="anchor-badge">master</span>' : '') +
+        '<span class="reason">'+esc(a.reason)+'</span>' +
+        '</div>'
+      ).join('');
+    } else {
+      panelAnchors.innerHTML = '<p class="inspect-empty">Geen ankerobjecten geïdentificeerd (entiteiten in ≥2 processen).</p>';
+    }
+  }
+
+  async function loadSources(filename){
+    const srcDiv = document.getElementById('inspect-sources');
+    const chgDiv = document.getElementById('inspect-changes');
+    srcDiv.innerHTML = '<em>Laden…</em>';
+    chgDiv.innerHTML = '';
+    try {
+      const r = await fetch('/project/'+pid+'/bpmn-sources/'+encodeURIComponent(filename));
+      const d = await r.json();
+      if (!d.has_trace) {
+        srcDiv.innerHTML = '<p class="inspect-empty">'+esc(d.message || 'Geen bron-trace beschikbaar.')+'</p>' +
+                           (d.detected_code ? '<p class="inspect-empty">Code gedetecteerd: '+d.detected_code+' — voeg entry toe in <code>source_trace.json</code> om bronnen vast te leggen.</p>' : '');
+        chgDiv.innerHTML = '';
+        return;
+      }
+      const trace = d.trace || {};
+      // Sources
+      const cards = (trace.sources || []).map(s => {
+        const type = s.type || 'bron';
+        const fields = s.extracted_fields || {};
+        const fieldsHtml = Object.keys(fields).length ?
+          '<dl class="src-fields">' + Object.entries(fields).map(([k,v]) =>
+            '<dt>'+esc(k)+'</dt><dd>'+esc(Array.isArray(v)?v.join(', '):v)+'</dd>'
+          ).join('') + '</dl>' : '';
+        const previewHtml = s.preview ? '<div class="src-preview">'+esc(s.preview)+'</div>' : '';
+        const openLink = s.raw_url ? '<a class="src-open" href="'+s.raw_url+'" target="_blank">→ open ruwe tekst</a>' : '';
+        return '<div class="src-card">' +
+          '<div class="src-header">' +
+            '<strong>'+esc(s.file || 'Onbekend')+'</strong>' +
+            '<span class="src-type src-type-'+type+'">'+type.toUpperCase()+'</span>' +
+          '</div>' +
+          '<div class="src-section">'+esc(s.section || '')+openLink+(s.total_lines?' <small>('+s.total_lines+' regels totaal)</small>':'')+'</div>' +
+          fieldsHtml + previewHtml +
+        '</div>';
+      }).join('');
+      srcDiv.innerHTML = cards || '<p class="inspect-empty">Geen sources in trace.</p>';
+
+      // Changes
+      const chgs = (trace.changes || []).map(c =>
+        '<div class="change-card">' +
+          '<div><span class="ch-what">'+esc(c.wijziging)+'</span>' +
+          (c.regel ? '<span class="ch-regel">'+esc(c.regel)+'</span>' : '')+'</div>' +
+          (c.bron_quote ? '<div class="ch-quote">"'+esc(c.bron_quote)+'"</div>' : '') +
+          (c.bron ? '<div class="ch-src">— '+esc(c.bron)+'</div>' : '') +
+        '</div>'
+      ).join('');
+      chgDiv.innerHTML = chgs || '<p class="inspect-empty">Geen wijzigingen vastgelegd.</p>';
+    } catch(e){
+      srcDiv.innerHTML = '<p class="inspect-empty">Fout bij laden bronnen: '+esc(e.message)+'</p>';
+    }
+  }
+
+  function extractEntitiesFromBpmn(xml){
+    const set = new Set();
+    const patterns = [
+      /<bpmn:dataObjectReference[^>]*name="([^"]+)"/gi,
+      /<bpmn:dataObject[^>]*name="([^"]+)"/gi,
+      /<bpmn:dataStoreReference[^>]*name="([^"]+)"/gi,
+    ];
+    for (const re of patterns) {
+      let m; while ((m = re.exec(xml)) !== null) {
+        const nm = m[1].replace(/[^A-Za-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+        if (nm && nm.length >= 2) set.add(nm);
+      }
+    }
+    return Array.from(set).slice(0, 8);
+  }
+
+  function esc(s){
+    return (s||'').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // Row click → open inspectie
+  document.querySelectorAll('tr.clickable[data-bpmn-file]').forEach(row => {
+    row.addEventListener('click', () => {
+      openInspect(row.dataset.bpmnFile);
+    });
+  });
+
+  // Skeleton generator
+  const btnSkel = document.getElementById('btn-generate-skeletons');
+  if (btnSkel){
+    btnSkel.addEventListener('click', async () => {
+      if (!confirm('Genereer een minimaal-geldig skeleton-BPMN voor elk verwacht proces dat nog geen BPMN heeft?')) return;
+      matchResult.innerHTML = '<em>Genereren…</em>';
+      try {
+        const r = await fetch('/project/'+pid+'/generate-skeletons', {method:'POST'});
+        const d = await r.json();
+        if (d.error){ matchResult.innerHTML = '<span style="color:#b00">Fout: '+d.error+'</span>'; return; }
+        matchResult.innerHTML = '<div style="background:#e7f5ea;border:1px solid #9ec9a0;border-radius:6px;padding:10px;">' +
+          '<strong>✓ '+d.created+' skeleton-BPMNs aangemaakt.</strong><br>' +
+          (d.skipped.length ? d.skipped.length+' overgeslagen (al aanwezig).' : '') +
+          '</div>';
+      } catch(err){
+        matchResult.innerHTML = '<span style="color:#b00">Exceptie: '+err.message+'</span>';
+      }
+    });
+  }
+})();
+</script>
 {% endblock %}

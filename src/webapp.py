@@ -40,8 +40,10 @@ import bpmn_defs                                         # noqa: E402
 import bpmn_erd                                          # noqa: E402
 import bpmn_project                                      # noqa: E402
 import bpmn_docs                                         # noqa: E402
+import bpmn_interactive                                  # noqa: E402
 import bpmn_anchors                                      # noqa: E402
 import bpmn_process_map                                  # noqa: E402
+import csv_field_detector                                # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -77,7 +79,7 @@ def _mermaid_id(name: str) -> str:
 def _build_smart_erd(model, user_defs) -> dict:
     """Bouw het volledige datamodel via bpmn_erd en retourneer dict met
     mermaid, summary, entities, relationships en cross-BPMN findings."""
-    entities, rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+    entities, rels = bpmn_erd.build_erd(model, user_defs=user_defs, project_root=ROOT)
     mermaid = bpmn_erd.to_mermaid(entities, rels)
     erd_summary = bpmn_erd.summarize(entities, rels)
     x_findings = bpmn_erd.cross_bpmn_findings(entities)
@@ -199,12 +201,329 @@ def projects_create():
     return redirect(url_for("project_detail", pid=meta["id"]))
 
 
+def _compute_process_matches(pid: str, meta: dict) -> dict:
+    """Match elke CSV-procesregister-rij aan een BPMN-bestand en retourneer
+    rijen + orphan uploads + totalen.
+
+    Gebruikt door /project/<pid> én /project/<pid>/processes. Code op één
+    plek zodat beide views altijd dezelfde match-score gebruiken."""
+    origins = meta.get("bpmn_origins", {})
+    records = meta.get("proceslijst_records", [])
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    disk_bpmns = sorted([p.name for p in data_dir.glob("*.bpmn")]) \
+                 if data_dir.exists() else []
+
+    STOPW = {"l1", "l2", "l3", "l4", "soll", "ist", "v1", "v2", "v3", "v4",
+             "de", "het", "een", "en", "in", "van", "bij", "voor", "op",
+             "proces", "subproces", "bpmn", "concept"}
+    # 'final' en 'p01'..'p09' bewust NIET in STOPW: gebruikers hernoemen
+    # uploads met P-nummers die betekenisvol zijn.
+
+    def tok(s: str) -> set[str]:
+        return {t for t in re.split(r"[^a-zA-Z0-9]+", s.lower())
+                if t and len(t) > 2 and t not in STOPW}
+
+    def code_variants(code: str) -> list[str]:
+        return [code, code.replace(".", "_"),
+                code.replace(".", "-"), code.replace(".", "")]
+
+    def _fuzzy_overlap(a: set[str], b: set[str]) -> set[str]:
+        """Match op exact én op substring in beide richtingen, zodat
+        'contributie' ~ 'contributies', 'werverspremie' ~ 'werverspremie',
+        'organisatie' ~ 'organisatiegegevens'. Minimum 4 tekens om valse
+        hits op korte woordjes te voorkomen."""
+        hits = a & b
+        for ta in a:
+            if len(ta) < 4:
+                continue
+            for tb in b:
+                if len(tb) < 4 or (ta, tb) in hits:
+                    continue
+                if ta in tb or tb in ta:
+                    hits.add(ta)
+                    break
+        return hits
+
+    matched_files: set[str] = set()
+    rows = []
+    for rec in records:
+        code = rec.get("code", "").strip()
+        naam = (rec.get("naam") or rec.get("deelproces")
+                or rec.get("subproces") or "").strip()
+        proc_tokens = tok(naam + " " + rec.get("subproces", "")
+                          + " " + rec.get("deelproces", ""))
+        best = None
+        best_score = 0
+        best_why = ""
+        for fname in disk_bpmns:
+            score = 0
+            why = []
+            fn_low = fname.lower()
+            if code:
+                for cv in code_variants(code):
+                    if cv and cv in fn_low:
+                        score += 10
+                        why.append(f"code {cv}")
+                        break
+            file_tokens = tok(fname.replace("-", " ").replace("_", " "))
+            overlap = _fuzzy_overlap(proc_tokens, file_tokens)
+            if overlap:
+                score += len(overlap) * 2
+                why.append("woorden: " + ", ".join(sorted(overlap)))
+            if score > best_score:
+                best_score = score
+                best = fname
+                best_why = "; ".join(why)
+        origin = origins.get(best or "", {}) if best else {}
+        rows.append({
+            "code": code,
+            "naam": naam,
+            "doel": rec.get("doel", ""),
+            "eigenaar": rec.get("eigenaar", ""),
+            "sme": rec.get("sme", ""),
+            "best_match": best,
+            "match_score": best_score,
+            "match_why": best_why,
+            "origin_kind": origin.get("kind", ""),
+            "origin_label": origin.get("kind_label", ""),
+            "matched": best_score >= 8,
+        })
+        if best and best_score >= 8:
+            matched_files.add(best)
+
+    orphan_uploads = []
+    for fname in disk_bpmns:
+        o = origins.get(fname, {})
+        if o.get("kind") != "upload":
+            continue
+        if fname in matched_files:
+            continue
+        orphan_uploads.append({
+            "file": fname,
+            "source": o.get("source", ""),
+            "created_at": o.get("created_at", ""),
+        })
+
+    totals = {
+        "records": len(records),
+        "disk_bpmns": len(disk_bpmns),
+        "uploads": sum(1 for o in origins.values() if o.get("kind") == "upload"),
+        "skeletons": sum(1 for o in origins.values() if o.get("kind") == "skeleton"),
+        "matched_records": sum(1 for r in rows if r["matched"]),
+        "unmatched_records": sum(1 for r in rows if not r["matched"]),
+        "orphan_uploads": len(orphan_uploads),
+    }
+    return {"rows": rows, "orphan_uploads": orphan_uploads, "totals": totals}
+
+
 @app.route("/project/<pid>")
 def project_detail(pid: str):
     meta = bpmn_project.load(ROOT, pid)
     if meta is None:
         abort(404)
-    return render_template("project.html", project=meta, max_mb=MAX_FILE_MB)
+    match = _compute_process_matches(pid, meta)
+    return render_template("project.html", project=meta,
+                           max_mb=MAX_FILE_MB,
+                           process_match=match)
+
+
+@app.route("/project/<pid>/interactive", methods=["GET"])
+def project_interactive_index(pid: str):
+    """Overzicht van interactief te reviewen documenten + upload-formulier."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    docs = bpmn_interactive.list_interactive_docs(pdir)
+    return render_template("interactive_index.html",
+                           project=meta, docs=docs, max_mb=MAX_FILE_MB)
+
+
+@app.route("/project/<pid>/interactive/upload", methods=["POST"])
+def project_interactive_upload(pid: str):
+    """Upload een .docx/.pptx en bouw chunks zonder auto-generatie."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    f = request.files.get("doc_file")
+    if not f or not f.filename:
+        return "Geen bestand geüpload.", 400
+    ext = Path(f.filename).suffix.lower()
+    if ext not in (".docx", ".pptx"):
+        return "Alleen .docx of .pptx.", 400
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    # Tijdelijk opslaan om aan bpmn_interactive te geven
+    tmp = pdir / f"_tmp_interactive{ext}"
+    f.save(str(tmp))
+    try:
+        doc_id, _ = bpmn_interactive.build_chunks_file(
+            pdir, tmp, f.filename, project_root=ROOT,
+        )
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return redirect(url_for("project_interactive_review",
+                            pid=pid, doc_id=doc_id, chunk=0))
+
+
+@app.route("/project/<pid>/interactive/<doc_id>/review")
+def project_interactive_review(pid: str, doc_id: str):
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    data = bpmn_interactive.load_chunks(pdir, doc_id)
+    if data is None:
+        abort(404)
+    try:
+        chunk_idx = int(request.args.get("chunk", 0))
+    except (TypeError, ValueError):
+        chunk_idx = 0
+    chunks = data["chunks"]
+    chunk_idx = max(0, min(chunk_idx, len(chunks) - 1))
+    processed = sum(1 for c in chunks if c.get("decision") == "processed")
+    skipped = sum(1 for c in chunks if c.get("decision") == "skipped")
+    remaining = len(chunks) - processed - skipped
+    return render_template("interactive_review.html",
+                           project=meta, doc=data,
+                           chunk=chunks[chunk_idx], chunk_idx=chunk_idx,
+                           total=len(chunks),
+                           processed=processed, skipped=skipped,
+                           remaining=remaining)
+
+
+@app.route("/project/<pid>/interactive/<doc_id>/apply", methods=["POST"])
+def project_interactive_apply(pid: str, doc_id: str):
+    if not bpmn_project.is_valid_pid(pid):
+        return jsonify({"error": "Ongeldig project"}), 404
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    payload = request.get_json(silent=True) or {}
+    try:
+        chunk_idx = int(payload.get("chunk_idx", -1))
+    except (TypeError, ValueError):
+        return jsonify({"error": "chunk_idx verplicht"}), 400
+    action = (payload.get("action") or "").strip().lower()
+    if action not in ("process", "skip"):
+        return jsonify({"error": "action moet 'process' of 'skip' zijn"}), 400
+    try:
+        res = bpmn_interactive.apply_chunk_decision(
+            pdir, doc_id, chunk_idx, action,
+            payload.get("payload"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(res)
+
+
+@app.route("/project/<pid>/upload-for-process", methods=["POST"])
+def project_upload_for_process(pid: str):
+    """Upload een .bpmn/.xml voor een specifiek proces uit het register.
+
+    Form-data:
+      code           — processcode uit CSV (bv. '1.1.10')
+      naam           — processnaam
+      replace_file   — (optioneel) bestaande filename die vervangen moet
+                       worden (typisch een skeleton)
+      bpmn_file      — het echte BPMN-bestand
+
+    Workflow:
+      - Als replace_file meegegeven is én bestaat: overschrijf het (en
+        zet de origin om van 'skeleton' naar 'upload').
+      - Anders: sla op onder een nieuwe, slug-gebaseerde filename die
+        de code + naam bevat. Als de filename al bestaat, voeg `_u1`,
+        `_u2`... toe.
+      - Registreer nieuwe kind_label = 'Door gebruiker geupload (voor
+        proces X.Y)'.
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    code = (request.form.get("code") or "").strip()
+    naam = (request.form.get("naam") or "").strip()
+    replace_file = secure_filename(request.form.get("replace_file") or "")
+    f = request.files.get("bpmn_file")
+    if not f or not f.filename:
+        return "Geen BPMN-bestand gekozen.", 400
+    if Path(f.filename).suffix.lower() not in ALLOWED_EXT:
+        return "Alleen .bpmn of .xml toegestaan.", 400
+
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    def slugify(s: str) -> str:
+        s = re.sub(r"[^a-zA-Z0-9]+", "_", s.lower()).strip("_")
+        return s or "proces"
+
+    # Bepaal doel-filename
+    origins = meta.setdefault("bpmn_origins", {})
+    if replace_file and (data_dir / replace_file).exists():
+        target_name = replace_file
+    else:
+        base = f"{slugify(code)}_{slugify(naam)}".strip("_")[:80] or "proces"
+        target_name = f"{base}.bpmn"
+        n = 1
+        while (data_dir / target_name).exists():
+            target_name = f"{base}_u{n}.bpmn"
+            n += 1
+
+    target_path = data_dir / target_name
+    # Oude v1 behouden als er een bestaand bestand is
+    if target_path.exists():
+        bpmn_apply.ensure_v1(pdir, target_name)
+    target_path.write_bytes(f.read())
+    # Nieuwe upload als versie registreren
+    try:
+        bpmn_apply.add_upload_version(
+            pdir, target_name,
+            bytes_=target_path.read_bytes(),
+            description=(f"Handmatig geüpload voor proces {code} {naam} "
+                         f"(origineel: {f.filename})"),
+        )
+    except Exception:
+        pass  # versie-log is hulpdata
+
+    from datetime import datetime as _dt
+    origins[target_name] = {
+        "kind": "upload",
+        "kind_label": f"Door gebruiker geüpload voor proces {code} {naam}".strip(),
+        "source": f.filename,
+        "source_row": f"{code} {naam}".strip(),
+        "created_at": _dt.now().isoformat(timespec="seconds"),
+    }
+    if target_name not in meta.get("bpmn_files", []):
+        meta.setdefault("bpmn_files", []).append(target_name)
+    order = list(meta.get("bpmn_order", []))
+    if target_name not in order:
+        order.append(target_name)
+        meta["bpmn_order"] = order
+    bpmn_project.save(ROOT, meta)
+
+    return redirect(request.referrer or url_for("project_detail", pid=pid))
+
+
+@app.route("/project/<pid>/processes")
+def project_processes(pid: str):
+    """Toon CSV-procesregister + match naar BPMNs + herkomst-badge
+    (uploaded vs skeleton)."""
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    match = _compute_process_matches(pid, meta)
+    return render_template("processes.html",
+                           project=meta, rows=match["rows"],
+                           orphan_uploads=match["orphan_uploads"],
+                           totals=match["totals"])
 
 
 @app.route("/project/<pid>/add-bpmn", methods=["POST"])
@@ -228,6 +547,8 @@ def project_add_bpmn(pid: str):
     data_dir = bpmn_project.project_data_dir(ROOT, pid)
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    from datetime import datetime as _dt
+    meta.setdefault("bpmn_origins", {})
     for f in files:
         safe = secure_filename(f.filename) or f"upload_{uuid.uuid4().hex[:6]}.bpmn"
         dest = data_dir / safe
@@ -245,6 +566,12 @@ def project_add_bpmn(pid: str):
             f.save(str(dest))
             # Registreer v1
             bpmn_apply.ensure_v1(bpmn_project.project_root_dir(ROOT, pid), safe)
+        meta["bpmn_origins"][safe] = {
+            "kind": "upload",
+            "kind_label": "Door gebruiker geupload",
+            "source": f.filename,
+            "created_at": _dt.now().isoformat(timespec="seconds"),
+        }
 
     # Update bpmn_order zodat nieuwe files onderaan komen
     order = list(meta.get("bpmn_order", []))
@@ -288,7 +615,7 @@ def _regenerate_project_summary(pid: str) -> dict:
     process_map_mermaid = ""
     process_relations: list[dict] = []
     try:
-        entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+        entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs, project_root=ROOT)
         bpmn_anchors.ingest_from_model(ROOT, entities_obj, project_id=pid)
         # Bouw ook de proces-relatie-kaart: welke processen hangen samen
         # via gedeelde entities?
@@ -678,10 +1005,23 @@ def project_upload_doc(pid: str):
 
     # Genereerde BPMN's opslaan in project/data/ en per-bestand v1 registreren
     data_dir = bpmn_project.project_data_dir(ROOT, pid)
-    for filename, xml_bytes, tasks_meta, _proc_name in bpmns:
+    from datetime import datetime as _dt
+    meta.setdefault("bpmn_origins", {})
+    doc_kind = "word" if ext == ".docx" else "powerpoint"
+    doc_kind_label = "Auto-gegenereerd uit Word-document" if ext == ".docx" else "Auto-gegenereerd uit PowerPoint"
+    for filename, xml_bytes, tasks_meta, proc_name in bpmns:
         dest_bpmn = data_dir / filename
         dest_bpmn.write_bytes(xml_bytes)
         bpmn_apply.ensure_v1(pdir, filename)
+        meta["bpmn_origins"][filename] = {
+            "kind": doc_kind,
+            "kind_label": doc_kind_label,
+            "source": f.filename,
+            "source_proces": proc_name,
+            "source_tasks": [t.get("name", "") if isinstance(t, dict) else getattr(t, "name", "") for t in (tasks_meta or [])][:10],
+            "doc_id": doc_id,
+            "created_at": _dt.now().isoformat(timespec="seconds"),
+        }
 
     # Update bpmn_order: voeg nieuwe files onderaan toe
     order = list(meta.get("bpmn_order", []))
@@ -775,7 +1115,7 @@ def project_auto_order(pid: str):
 
     model = merge(bpmns)
     user_defs = bpmn_defs.load(ROOT)
-    entities, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+    entities, _rels = bpmn_erd.build_erd(model, user_defs=user_defs, project_root=ROOT)
     source_file_by_process = {
         (b.process_name or b.source_file): b.source_file for b in bpmns
     }
@@ -894,6 +1234,624 @@ def project_register(pid: str):
     return render_template("register.html",
                            project=meta, expected=expected,
                            matched=matched, unexpected=unexpected)
+
+
+@app.route("/project/<pid>/upload-csv", methods=["POST"])
+def project_upload_csv(pid: str):
+    """Upload een proceslijst-CSV en laat de veld-detector de kolommen herkennen.
+
+    POST multipart:
+        file=<csv>
+        apply=<"true"|"false">  # indien "true": zet expected_processes meteen
+
+    Returns JSON:
+        {
+          "info":    {encoding, delimiter, header_row, n_rows, mapping, unmapped_columns},
+          "schema":  {code: idx, naam: idx, ...},
+          "records": [{code, naam, hoofdproces, ...}, ...],
+          "applied": <bool>,
+          "expected_count": <int>
+        }
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+
+    if "file" not in request.files:
+        return jsonify({"error": "geen bestand"}), 400
+    f = request.files["file"]
+    fname = secure_filename(f.filename or "upload.csv")
+    if not fname.lower().endswith((".csv", ".tsv", ".txt")):
+        return jsonify({"error": "alleen .csv/.tsv/.txt toegestaan"}), 400
+
+    # Bewaar tijdelijk in de project-folder
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    pdir.mkdir(parents=True, exist_ok=True)
+    tmp_path = pdir / "procesregister_upload.csv"
+    f.save(str(tmp_path))
+
+    try:
+        records, schema, info = csv_field_detector.detect_and_parse(str(tmp_path))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"kon CSV niet parsen: {exc}"}), 400
+
+    applied = False
+    apply_flag = request.form.get("apply", "false").lower() in ("true", "1", "yes")
+    if apply_flag and records:
+        # Converteer records naar een leesbare lijst voor expected_processes.
+        # Format: "<code> <naam> - <hoofdproces> / <subproces>"
+        lines = []
+        for r in records:
+            code = r.get("code", "").strip()
+            naam = (r.get("naam") or r.get("deelproces") or r.get("subproces") or "").strip()
+            hp   = r.get("hoofdproces", "").strip()
+            sp   = r.get("subproces", "").strip()
+            parts = []
+            if code: parts.append(code)
+            if naam: parts.append(naam)
+            context = " / ".join(x for x in (hp, sp) if x)
+            label = " ".join(parts)
+            if context and label:
+                label = f"{label} - {context}"
+            elif context:
+                label = context
+            if label:
+                lines.append(label)
+        meta["expected_processes"] = lines
+        # Bewaar ook de ruwe records als metadata voor latere matching/analyse
+        meta["proceslijst_records"]   = records
+        meta["proceslijst_schema"]    = schema
+        meta["proceslijst_csv_info"]  = info
+        bpmn_project.save(ROOT, meta)
+        applied = True
+
+    return jsonify({
+        "info": info,
+        "schema": schema,
+        "records": records,
+        "applied": applied,
+        "expected_count": len(records) if applied else 0,
+        "sample": records[:5],
+    })
+
+
+@app.route("/project/<pid>/entity-sources")
+def project_entity_sources(pid: str):
+    """Per entiteit: welke processen/BPMNs hem 'bijgedragen' hebben.
+
+    Antwoordt op de vraag 'waar haal je entiteit X vandaan?'.
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    summary_path = bpmn_project.project_output_dir(ROOT, pid) / "summary.json"
+    if not summary_path.exists():
+        return jsonify({"entities": [], "error": "nog geen summary; eerst /analyze draaien"}), 200
+    try:
+        s = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"entities": [], "error": f"kon summary niet lezen: {exc}"}), 500
+    out = []
+    for e in s.get("erd", {}).get("entities", []):
+        if isinstance(e, str):
+            out.append({"name": e})
+            continue
+        out.append({
+            "name": e.get("name"),
+            "aliases": sorted(set(e.get("aliases", []))),
+            "source_processes": e.get("source_processes", []),
+            "n_processes": len(e.get("source_processes", [])),
+            "is_anchor": e.get("is_anchor", False),
+            "is_master": e.get("is_master", False),
+            "bpmn_sources": e.get("source_bpmn_ids", [])[:30],
+            "attributes": [a if isinstance(a, str) else a.get("name") for a in e.get("attributes", [])][:15],
+        })
+    return jsonify({"entities": out})
+
+
+@app.route("/project/<pid>/apply-csv-mapping", methods=["POST"])
+def project_apply_csv_mapping(pid: str):
+    """Pas handmatige mapping-overrides toe op het laatst geuploade register.csv.
+
+    POST JSON:
+        {"overrides": {"CSV-kolom": "canoniek_veld", ...}}
+
+    De tool leest opnieuw `procesregister_upload.csv`, past overrides toe
+    bovenop de auto-mapping, en schrijft expected_processes + records weer weg.
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    overrides = data.get("overrides", {})
+    pdir = bpmn_project.project_root_dir(ROOT, pid)
+    csv_path = pdir / "procesregister_upload.csv"
+    if not csv_path.exists():
+        return jsonify({"error": "geen eerder geuploade CSV gevonden"}), 400
+
+    try:
+        records, schema, info = csv_field_detector.detect_and_parse(str(csv_path))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"kon CSV niet opnieuw parsen: {exc}"}), 400
+
+    # Pas overrides toe: vind voor elke override-kolom de kolom-index en zet
+    # 'm in het schema onder de gekozen canonieke naam (overschrijf eventueel
+    # een auto-mapping).
+    import csv as _csv
+    with open(csv_path, encoding=info["encoding"]) as f:
+        rows = list(_csv.reader(f, delimiter=info["delimiter"]))
+    header = rows[info["header_row"]] if rows else []
+    col_idx = {c: i for i, c in enumerate(header)}
+
+    new_schema = {}
+    # eerst auto-schema
+    for k, v in schema.items():
+        new_schema[k] = v
+    # overrides
+    for csv_col, canon in overrides.items():
+        if canon in (None, "", "(negeren)"):
+            continue
+        if csv_col in col_idx:
+            # verwijder eventuele andere kolom die dezelfde canon claimde
+            for k in [k for k, v in new_schema.items() if k == canon]:
+                del new_schema[k]
+            new_schema[canon] = col_idx[csv_col]
+
+    # Bouw records opnieuw
+    data_rows = rows[info["header_row"] + 1:]
+    new_records: list[dict] = []
+    for r in data_rows:
+        if not any(c.strip() for c in r):
+            continue
+        rec = {}
+        for canon, idx in new_schema.items():
+            rec[canon] = r[idx].strip() if idx < len(r) else ""
+        if not rec.get("code") and not rec.get("naam") and not rec.get("subproces"):
+            continue
+        new_records.append(rec)
+
+    # Zet expected_processes
+    lines = []
+    for rec in new_records:
+        code = rec.get("code", "").strip()
+        naam = (rec.get("naam") or rec.get("deelproces") or rec.get("subproces") or "").strip()
+        hp = rec.get("hoofdproces", "").strip()
+        sp = rec.get("subproces", "").strip()
+        parts = [x for x in (code, naam) if x]
+        context = " / ".join(x for x in (hp, sp) if x)
+        label = " ".join(parts)
+        if context and label:
+            label = f"{label} - {context}"
+        elif context:
+            label = context
+        if label:
+            lines.append(label)
+
+    meta["expected_processes"] = lines
+    meta["proceslijst_records"] = new_records
+    meta["proceslijst_schema"] = new_schema
+    meta["proceslijst_csv_info"] = {**info, "mapping": {col: c for c, idx in new_schema.items() for col, ix in col_idx.items() if ix == idx}}
+    bpmn_project.save(ROOT, meta)
+    return jsonify({"expected_count": len(lines), "records": new_records[:5], "schema": new_schema})
+
+
+@app.route("/project/<pid>/match-bpmns", methods=["POST"])
+def project_match_bpmns(pid: str):
+    """Match elk verwacht proces tegen de aanwezige BPMN's van het project.
+
+    Score-systeem:
+      +10 code-match in filename
+      +2  per overlappend woord (na stop-word filter)
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    expected = meta.get("expected_processes", [])
+    bpmn_files = meta.get("bpmn_files", [])
+    records = meta.get("proceslijst_records", [])
+
+    STOPW = {"l1", "l2", "l3", "l4", "soll", "ist", "v1", "v2", "v3", "v4",
+             "de", "het", "een", "en", "in", "van", "bij", "voor", "op",
+             "proces", "subproces", "bpmn", "concept"}
+
+    def tok(s: str) -> set[str]:
+        return {t for t in re.split(r"[^a-zA-Z0-9]+", s.lower())
+                if t and len(t) > 2 and t not in STOPW}
+
+    def code_variants(code: str) -> list[str]:
+        return [code, code.replace(".", "_"), code.replace(".", "-"), code.replace(".", "")]
+
+    results = []
+    # Als we ruwe records hebben gebruiken we die voor betere match (code + naam apart)
+    if records:
+        for rec in records:
+            code = rec.get("code", "")
+            naam = rec.get("naam") or rec.get("deelproces") or rec.get("subproces") or ""
+            proc_tokens = tok(naam + " " + rec.get("subproces", "") + " " + rec.get("deelproces", ""))
+            matches = []
+            for fname in bpmn_files:
+                score = 0
+                why = []
+                fn_low = fname.lower()
+                if code:
+                    for cv in code_variants(code):
+                        if cv and cv in fn_low:
+                            score += 10
+                            why.append(f"code {cv}")
+                            break
+                file_tokens = tok(fname.replace("-", " ").replace("_", " "))
+                overlap = proc_tokens & file_tokens
+                if overlap:
+                    score += len(overlap) * 2
+                    why.append("woorden: " + ", ".join(sorted(overlap)))
+                if score > 0:
+                    matches.append({"file": fname, "score": score, "why": "; ".join(why)})
+            matches.sort(key=lambda m: -m["score"])
+            results.append({
+                "expected": f"{code} {naam}".strip(),
+                "code": code,
+                "matches": matches[:5],
+                "best_match": matches[0] if matches and matches[0]["score"] >= 8 else None,
+            })
+    else:
+        # Fallback op enkel expected_processes strings
+        for exp in expected:
+            proc_tokens = tok(exp)
+            matches = []
+            for fname in bpmn_files:
+                score = 0
+                why = []
+                # Zoek proces-nummer in expected-string
+                m = re.search(r"(\d+\.\d+(?:\.\d+)?)", exp)
+                if m:
+                    for cv in code_variants(m.group(1)):
+                        if cv in fname.lower():
+                            score += 10
+                            why.append(f"code {cv}")
+                            break
+                file_tokens = tok(fname.replace("-", " ").replace("_", " "))
+                overlap = proc_tokens & file_tokens
+                if overlap:
+                    score += len(overlap) * 2
+                    why.append("woorden: " + ", ".join(sorted(overlap)))
+                if score > 0:
+                    matches.append({"file": fname, "score": score, "why": "; ".join(why)})
+            matches.sort(key=lambda m: -m["score"])
+            results.append({
+                "expected": exp,
+                "code": None,
+                "matches": matches[:5],
+                "best_match": matches[0] if matches and matches[0]["score"] >= 8 else None,
+            })
+
+    return jsonify({"matches": results, "total_bpmns": len(bpmn_files)})
+
+
+@app.route("/project/<pid>/generate-skeletons", methods=["POST"])
+def project_generate_skeletons(pid: str):
+    """Genereer een minimaal-geldig skeleton-BPMN voor elk verwacht proces
+    dat nog geen bijbehorende BPMN heeft.
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+    records = meta.get("proceslijst_records", [])
+    bpmn_files = meta.get("bpmn_files", [])
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    def slugify(s: str) -> str:
+        s = re.sub(r"[^a-zA-Z0-9]+", "_", s.lower()).strip("_")
+        return s or "proces"
+
+    def safe_xml(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                 .replace('"', "&quot;").replace("'", "&apos;"))
+
+    TMPL = """<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  id="Definitions_{ID}" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collab_{ID}">
+    <bpmn:participant id="Part_{ID}" name="{POOL}" processRef="Proc_{ID}" />
+    <bpmn:textAnnotation id="TA_{ID}"><bpmn:text>{META}</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_{ID}" associationDirection="None" sourceRef="Task_{ID}" targetRef="TA_{ID}" />
+  </bpmn:collaboration>
+  <bpmn:process id="Proc_{ID}" isExecutable="false">
+    <bpmn:laneSet id="LS_{ID}">
+      <bpmn:lane id="Lane_{ID}" name="Onbekend">
+        <bpmn:flowNodeRef>Start_{ID}</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_{ID}</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_{ID}</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="Start_{ID}" name="Start {CODE}"><bpmn:outgoing>F_st_{ID}</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:task id="Task_{ID}" name="{TASK}">
+      <bpmn:incoming>F_st_{ID}</bpmn:incoming>
+      <bpmn:outgoing>F_te_{ID}</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_{ID}" name="Afgerond {CODE}"><bpmn:incoming>F_te_{ID}</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="F_st_{ID}" sourceRef="Start_{ID}" targetRef="Task_{ID}" />
+    <bpmn:sequenceFlow id="F_te_{ID}" sourceRef="Task_{ID}" targetRef="End_{ID}" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diag_{ID}">
+    <bpmndi:BPMNPlane id="Plane_{ID}" bpmnElement="Collab_{ID}">
+      <bpmndi:BPMNShape id="Part_{ID}_di" bpmnElement="Part_{ID}" isHorizontal="true"><dc:Bounds x="160" y="80" width="720" height="200" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_{ID}_di" bpmnElement="Lane_{ID}" isHorizontal="true"><dc:Bounds x="190" y="80" width="690" height="200" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_{ID}_di" bpmnElement="Start_{ID}"><dc:Bounds x="240" y="162" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_{ID}_di" bpmnElement="Task_{ID}"><dc:Bounds x="340" y="140" width="240" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_{ID}_di" bpmnElement="End_{ID}"><dc:Bounds x="660" y="162" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TA_{ID}_di" bpmnElement="TA_{ID}"><dc:Bounds x="320" y="300" width="440" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="F_st_{ID}_di" bpmnElement="F_st_{ID}"><di:waypoint x="276" y="180" /><di:waypoint x="340" y="180" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F_te_{ID}_di" bpmnElement="F_te_{ID}"><di:waypoint x="580" y="180" /><di:waypoint x="660" y="180" /></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
+"""
+    existing_slugs = {slugify(Path(f).stem) for f in bpmn_files}
+    created = []
+    skipped = []
+    from datetime import datetime as _dt
+    meta.setdefault("bpmn_origins", {})
+    for rec in records:
+        code = rec.get("code", "").strip()
+        naam = (rec.get("naam") or rec.get("deelproces") or rec.get("subproces") or "").strip()
+        if not code and not naam:
+            continue
+        base_slug = slugify(f"{code}_{naam}")
+        if any(base_slug in es or es in base_slug for es in existing_slugs):
+            skipped.append(base_slug)
+            continue
+        fid = slugify(code) or slugify(naam)
+        pool = f"[{code}] {naam}"[:100]
+        task = f"Uitvoeren {naam[:1].lower()}{naam[1:]}" if naam else "Uitvoeren proces"
+        meta_txt = []
+        if rec.get("doel"): meta_txt.append(f"Doel: {rec['doel'][:300]}")
+        if rec.get("eigenaar"): meta_txt.append(f"Eigenaar: {rec['eigenaar']}")
+        if rec.get("sme"): meta_txt.append(f"SME: {rec['sme']}")
+        meta_str = " | ".join(meta_txt)[:800]
+        xml = TMPL.format(ID=fid, CODE=safe_xml(code), POOL=safe_xml(pool),
+                          TASK=safe_xml(task), META=safe_xml(meta_str))
+        out = data_dir / f"{base_slug}.bpmn"
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(xml)
+        created.append(base_slug + ".bpmn")
+        if out.name not in meta.get("bpmn_files", []):
+            meta.setdefault("bpmn_files", []).append(out.name)
+        meta["bpmn_origins"][out.name] = {
+            "kind": "skeleton",
+            "kind_label": "Auto-gegenereerd skeleton uit CSV",
+            "source": "procesregister_upload.csv",
+            "source_row": f"{code} {naam}".strip(),
+            "source_doel": rec.get("doel", ""),
+            "source_eigenaar": rec.get("eigenaar", ""),
+            "source_sme": rec.get("sme", ""),
+            "created_at": _dt.now().isoformat(timespec="seconds"),
+        }
+
+    bpmn_project.save(ROOT, meta)
+    return jsonify({"created": len(created), "files": created, "skipped": skipped})
+
+
+@app.route("/project/<pid>/bpmn-info/<path:filename>")
+def project_bpmn_info(pid: str, filename: str):
+    """Retourneer herkomst + anchor-info + gerelateerde BPMN-varianten.
+
+    Response JSON:
+        {
+          "filename":       "...",
+          "origin":         { "kind":..., "kind_label":..., "source":..., "source_row":..., ... }
+          "anchor_entities": [ {"name":"Lid", "reason":"komt voor in 5 processen: ..."} ],
+          "variants":       [ {"filename":"...", "kind":"origineel|v1|v2|regelconform", "url":"..."} ],
+          "raw_url":        "/project/<pid>/bpmn/<filename>",
+          "summary_url":    "/project/<pid>/results#bpmn:..."
+        }
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+
+    origins = meta.get("bpmn_origins", {})
+    # Als geen origin bekend is → default: upload
+    if filename in origins:
+        origin = origins[filename]
+    else:
+        origin = {
+            "kind": "upload",
+            "kind_label": "Door gebruiker geupload",
+            "source": filename,
+        }
+
+    # Varianten zoeken (versies/ folder)
+    variants: list[dict] = []
+    project_root = bpmn_project.project_root_dir(ROOT, pid)
+    versions_base = project_root / "versions"
+    base_stem = Path(filename).stem
+    if versions_base.exists():
+        for sub in versions_base.iterdir():
+            if sub.is_dir() and (base_stem.lower() in sub.name.lower() or sub.name.lower() in base_stem.lower()):
+                for vf in sorted(sub.glob("*.bpmn")):
+                    variants.append({
+                        "filename": vf.name,
+                        "kind": "versie",
+                        "url": f"/project/{pid}/bpmn-original/{vf.relative_to(project_root).as_posix()}",
+                    })
+    # Actieve BPMN
+    data_dir = bpmn_project.project_data_dir(ROOT, pid)
+    if (data_dir / filename).exists():
+        variants.append({
+            "filename": filename,
+            "kind": "actief",
+            "url": f"/project/{pid}/bpmn/{filename}",
+        })
+
+    # Anchor-info: welke entiteiten uit de globale anchors komen vaak voor
+    anchors = []
+    try:
+        all_anchors = bpmn_anchors.get_anchors(ROOT, min_processes=2)
+        for a in all_anchors[:50]:
+            n_proc = len(a.get("processes", []))
+            n_proj = len(a.get("projects", []))
+            reason_parts = [f"komt voor in {n_proc} processen"]
+            procs = a.get("processes", [])[:5]
+            if procs:
+                reason_parts.append("bv. " + ", ".join(procs))
+            if n_proj > 1:
+                reason_parts.append(f"in {n_proj} projecten")
+            if a.get("is_master"):
+                reason_parts.append("gemarkeerd als master-entiteit")
+            anchors.append({
+                "name": a["name"],
+                "n_processes": n_proc,
+                "processes": procs,
+                "reason": "; ".join(reason_parts),
+                "is_master": a.get("is_master", False),
+            })
+    except Exception:
+        pass
+
+    return jsonify({
+        "filename": filename,
+        "origin": origin,
+        "anchor_entities": anchors,
+        "variants": variants,
+        "raw_url": f"/project/{pid}/bpmn/{filename}",
+        "summary_url": f"/project/{pid}/results#bpmn:{filename}",
+    })
+
+
+def _find_source_trace(code: str) -> dict | None:
+    """Zoek in handmade/projects/*/source_trace.json naar een entry voor deze code."""
+    base = ROOT / "output" / "handmade" / "projects"
+    if not base.exists():
+        return None
+    for proj_dir in base.iterdir():
+        st = proj_dir / "source_trace.json"
+        if not st.exists():
+            continue
+        try:
+            data = json.loads(st.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        # Probeer code varianten
+        for variant in (code, code.replace("_", "."), code.replace("-", ".")):
+            if variant in data:
+                entry = dict(data[variant])
+                entry["_source_trace_file"] = str(st.relative_to(ROOT)).replace("\\", "/")
+                entry["_project_slug"] = proj_dir.name
+                return entry
+    return None
+
+
+def _extract_code_from_filename(fname: str) -> str | None:
+    """Haal proces-code uit filename. Bv. '1_1_27_xxx.bpmn' -> '1.1.27'."""
+    m = re.search(r"(\d+)[_.\-](\d+)(?:[_.\-](\d+))?(?:[_.\-](\d+))?", fname)
+    if not m:
+        return None
+    parts = [g for g in m.groups() if g is not None]
+    return ".".join(parts[:3]) if len(parts) >= 2 else None
+
+
+@app.route("/project/<pid>/bpmn-sources/<path:filename>")
+def project_bpmn_sources(pid: str, filename: str):
+    """Retourneer welke Word/PPT bronnen voor deze BPMN zijn geraadpleegd en
+    welke wijzigingen zijn doorgevoerd met bron-citaat.
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    meta = bpmn_project.load(ROOT, pid)
+    if meta is None:
+        abort(404)
+
+    # Probeer eerst via code uit filename
+    code = _extract_code_from_filename(filename)
+    trace = _find_source_trace(code) if code else None
+
+    # Als er geen trace is, ook proberen via source_row in origins
+    if not trace:
+        origin = meta.get("bpmn_origins", {}).get(filename, {})
+        row = origin.get("source_row", "")
+        m = re.match(r"(\d+\.\d+(?:\.\d+)?)", row)
+        if m:
+            trace = _find_source_trace(m.group(1))
+
+    if not trace:
+        return jsonify({
+            "has_trace": False,
+            "filename": filename,
+            "detected_code": code,
+            "message": "Geen bron-trace gevonden voor deze BPMN (nog niet regelconform uitgewerkt of geen source_trace.json-entry).",
+        })
+
+    # Voor elke bron: lees bronnen-tekst (eerste N regels) en voeg link toe
+    for src in trace.get("sources", []):
+        ep = src.get("extract_path", "")
+        if ep:
+            abs_path = ROOT / ep
+            if abs_path.exists():
+                try:
+                    lines = abs_path.read_text(encoding="utf-8").splitlines()
+                    lr = src.get("line_range")
+                    if lr and len(lr) == 2:
+                        # toon alleen de relevante section
+                        src["preview"] = "\n".join(lines[lr[0]-1:lr[1]])
+                    else:
+                        src["preview"] = "\n".join(lines[:40])
+                    src["total_lines"] = len(lines)
+                except Exception as e:
+                    src["preview"] = f"(kon bestand niet lezen: {e})"
+                src["raw_url"] = f"/project/{pid}/source-raw?path=" + ep
+
+    # Review.md ook ophalen indien beschikbaar
+    review_md = None
+    rp = trace.get("review_path")
+    if rp:
+        rpath = ROOT / rp
+        if rpath.exists():
+            try:
+                review_md = rpath.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+    return jsonify({
+        "has_trace": True,
+        "filename": filename,
+        "detected_code": code,
+        "trace": trace,
+        "review_md": review_md,
+    })
+
+
+@app.route("/project/<pid>/source-raw")
+def project_source_raw(pid: str):
+    """Serveer een bron-tekstbestand (bronnen/word_*.txt, ppt_*.txt) in plain text.
+
+    Query-param: ?path=output/handmade/projects/.../bronnen/word_foo.txt
+    Veiligheid: pad moet beginnen met 'output/handmade/'.
+    """
+    if not bpmn_project.is_valid_pid(pid):
+        abort(404)
+    rel = request.args.get("path", "").replace("\\", "/")
+    if not rel.startswith("output/handmade/") or ".." in rel:
+        abort(400)
+    p = ROOT / rel
+    if not p.exists() or not p.is_file():
+        abort(404)
+    return send_from_directory(p.parent, p.name, mimetype="text/plain")
 
 
 @app.route("/project/<pid>/bulk-remove-bpmns", methods=["POST"])
@@ -1170,7 +2128,7 @@ def _regenerate_session_summary(sid: str) -> dict:
     process_map_mermaid = ""
     process_relations: list[dict] = []
     try:
-        entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs)
+        entities_obj, _rels = bpmn_erd.build_erd(model, user_defs=user_defs, project_root=ROOT)
         process_map_mermaid, process_relations = \
             bpmn_process_map.build_process_map(entities_obj)
     except Exception:

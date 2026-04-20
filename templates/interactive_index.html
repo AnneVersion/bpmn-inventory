@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Interactief verwerken - {{ project.name }}{% endblock %}
+
+{% block content %}
+<section>
+    <a href="{{ url_for('project_detail', pid=project.id) }}" class="btn-secondary">&larr; Naar project</a>
+    <h1>Interactief tekst verwerken — {{ project.name }}</h1>
+    <p class="lead">
+        Upload een <code>.docx</code> of <code>.pptx</code>. De tool splitst de tekst in secties en alinea's,
+        en toont je chunk-voor-chunk de voorgestelde entiteiten, systemen en processtappen.
+        Je bevestigt of slaat over: niets wordt blind toegepast.
+    </p>
+</section>
+
+<section>
+    <h2>Nieuw document uploaden</h2>
+    <form method="post" enctype="multipart/form-data"
+          action="{{ url_for('project_interactive_upload', pid=project.id) }}"
+          style="padding:16px;background:#f1f5f9;border-radius:8px;max-width:600px;">
+        <p>
+            <label for="doc_file"><strong>Bestand</strong> (max {{ max_mb }}MB)</label><br>
+            <input type="file" id="doc_file" name="doc_file" accept=".docx,.pptx" required>
+        </p>
+        <p><button type="submit" class="btn-primary">Upload &amp; start review</button></p>
+    </form>
+</section>
+
+{% if docs %}
+<section style="margin-top:32px;">
+    <h2>Lopende reviews</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Bestand</th>
+                <th>Type</th>
+                <th>Voortgang</th>
+                <th>Actie</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for d in docs %}
+            <tr>
+                <td><strong>{{ d.source_file }}</strong><br><small>id: <code>{{ d.doc_id }}</code></small></td>
+                <td><span class="badge">{{ d.kind|upper }}</span></td>
+                <td>
+                    <div style="background:#e5e7eb;border-radius:6px;overflow:hidden;width:260px;height:18px;position:relative;">
+                        {% set pct = (d.processed * 100 // d.total) if d.total else 0 %}
+                        <div style="background:#16a34a;height:100%;width:{{ pct }}%;"></div>
+                        <span style="position:absolute;top:0;left:0;right:0;text-align:center;font-size:.75rem;line-height:18px;color:#111;">
+                            {{ d.processed }} verwerkt · {{ d.skipped }} geskipt · {{ d.remaining }} open · {{ d.total }} totaal
+                        </span>
+                    </div>
+                </td>
+                <td>
+                    <a class="btn-primary" style="font-size:.85rem;padding:6px 12px;"
+                       href="{{ url_for('project_interactive_review', pid=project.id, doc_id=d.doc_id, chunk=0) }}">
+                        {% if d.remaining %}Doorgaan{% else %}Bekijk{% endif %}
+                    </a>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+{% endblock %}

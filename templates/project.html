@@ -70,6 +70,189 @@
     </a>
 </section>
 
+{% if process_match and process_match.totals.records %}
+<section>
+    <style>
+        .pm-stats { display:flex; gap:12px; flex-wrap:wrap; margin:10px 0 18px; }
+        .pm-card { background:#f1f5f9; padding:10px 14px; border-radius:8px; min-width:120px; }
+        .pm-card .num { font-size:1.5rem; font-weight:700; line-height:1; }
+        .pm-card .lbl { font-size:.8rem; color:#475569; }
+        .pm-origin { display:inline-block; padding:2px 7px; border-radius:4px; font-size:.72rem; font-weight:600; text-transform:uppercase; }
+        .pm-upload   { background:#dbeafe; color:#1e40af; }
+        .pm-skeleton { background:#fef3c7; color:#92400e; }
+        .pm-none     { background:#fee2e2; color:#991b1b; }
+        .pm-row.unmatched { background:#fff7ed; }
+        .pm-filter-row { margin:8px 0 14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .pm-filter-row input[type=search] { padding:4px 8px; border:1px solid #cbd5e1; border-radius:4px; min-width:220px; }
+        .pm-filter-row button { padding:4px 10px; font-size:.85rem; border-radius:4px; border:1px solid #cbd5e1; background:#fff; cursor:pointer; }
+        .pm-filter-row button.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+    </style>
+
+    <h2>
+        Processen &amp; BPMN-herkomst
+        <a href="{{ url_for('project_processes', pid=project.id) }}"
+           class="btn-secondary" style="font-size:.8rem;padding:4px 10px;margin-left:8px;vertical-align:middle;">
+            Detailpagina &rarr;
+        </a>
+    </h2>
+
+    <div class="pm-stats">
+        <div class="pm-card"><div class="num">{{ process_match.totals.records }}</div><div class="lbl">Processen (CSV)</div></div>
+        <div class="pm-card" style="background:#dbeafe;"><div class="num">{{ process_match.totals.uploads }}</div><div class="lbl">BPMN uploads</div></div>
+        <div class="pm-card" style="background:#fef3c7;"><div class="num">{{ process_match.totals.skeletons }}</div><div class="lbl">BPMN skeletons</div></div>
+        <div class="pm-card" style="background:#dcfce7;"><div class="num">{{ process_match.totals.matched_records }}</div><div class="lbl">Gematched</div></div>
+        <div class="pm-card" style="background:#fee2e2;"><div class="num">{{ process_match.totals.unmatched_records }}</div><div class="lbl">Niet gematched</div></div>
+    </div>
+
+    <div class="pm-filter-row">
+        <input type="search" id="pm-search" placeholder="Filter op code of naam…">
+        <button type="button" data-filter="all" class="active">Alle</button>
+        <button type="button" data-filter="upload">Alleen uploads</button>
+        <button type="button" data-filter="skeleton">Alleen skeletons</button>
+        <button type="button" data-filter="unmatched">Niet gematched</button>
+    </div>
+
+    <style>
+        .pm-upload-btn {
+            font-size:.75rem; padding:3px 8px; border-radius:4px; border:1px solid #2563eb;
+            background:#fff; color:#2563eb; cursor:pointer; display:inline-block; margin-top:4px;
+        }
+        .pm-upload-btn:hover { background:#eff6ff; }
+        .pm-upload-btn.replace {
+            border-color:#ea580c; color:#ea580c;
+        }
+        .pm-upload-btn.replace:hover { background:#fff7ed; }
+        .pm-upload-form { display:none; margin-top:6px; padding:8px; background:#eff6ff; border-radius:6px; }
+        .pm-upload-form.active { display:block; }
+        .pm-upload-form input[type=file] { font-size:.8rem; }
+        .pm-upload-form button { font-size:.8rem; padding:4px 10px; }
+        .pm-upload-form .cancel { background:#f3f4f6; border:1px solid #d1d5db; color:#374151; }
+    </style>
+
+    <table class="data-table" id="pm-table">
+        <thead>
+            <tr>
+                <th>Code</th>
+                <th>Procesnaam</th>
+                <th>Eigenaar / SME</th>
+                <th>BPMN-bestand</th>
+                <th>Herkomst</th>
+                <th>Acties</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in process_match.rows %}
+            <tr class="pm-row {% if not r.matched %}unmatched{% endif %}"
+                data-kind="{{ r.origin_kind or 'none' }}"
+                data-matched="{{ 'yes' if r.matched else 'no' }}"
+                data-search="{{ (r.code ~ ' ' ~ r.naam)|lower }}">
+                <td><code>{{ r.code }}</code></td>
+                <td><strong>{{ r.naam }}</strong></td>
+                <td><small>{% if r.eigenaar %}{{ r.eigenaar }}{% endif %}{% if r.sme %} / {{ r.sme }}{% endif %}</small></td>
+                <td>
+                    {% if r.best_match and r.matched %}
+                        <a href="{{ url_for('project_bpmn_raw', pid=project.id, filename=r.best_match) }}" target="_blank">
+                            <code style="font-size:.82rem;">{{ r.best_match }}</code>
+                        </a>
+                        <div style="color:#6b7280;font-size:.75rem;">score {{ r.match_score }} · {{ r.match_why }}</div>
+                    {% elif r.best_match %}
+                        <code style="font-size:.82rem;color:#b45309;">{{ r.best_match }}</code>
+                        <small>(score {{ r.match_score }}, te laag)</small>
+                    {% else %}
+                        <em style="color:#9ca3af;">geen</em>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if r.origin_kind == 'upload' %}<span class="pm-origin pm-upload">upload</span>
+                    {% elif r.origin_kind == 'skeleton' %}<span class="pm-origin pm-skeleton">afgeleid</span>
+                    {% else %}<span class="pm-origin pm-none">—</span>{% endif %}
+                </td>
+                <td>
+                    {% set needs_replace = r.origin_kind == 'skeleton' and r.matched %}
+                    <button type="button"
+                            class="pm-upload-btn {% if needs_replace %}replace{% endif %}"
+                            data-toggle-row="{{ loop.index0 }}">
+                        {% if needs_replace %}↻ Vervang skeleton
+                        {% elif r.matched %}+ Nieuwe versie
+                        {% else %}+ Upload BPMN{% endif %}
+                    </button>
+                    <form class="pm-upload-form" id="pm-upload-{{ loop.index0 }}"
+                          method="post" enctype="multipart/form-data"
+                          action="{{ url_for('project_upload_for_process', pid=project.id) }}">
+                        <input type="hidden" name="code" value="{{ r.code }}">
+                        <input type="hidden" name="naam" value="{{ r.naam }}">
+                        {% if needs_replace and r.best_match %}
+                            <input type="hidden" name="replace_file" value="{{ r.best_match }}">
+                            <div style="font-size:.78rem;color:#92400e;margin-bottom:4px;">
+                                Vervangt <code>{{ r.best_match }}</code> (v1 blijft bewaard)
+                            </div>
+                        {% endif %}
+                        <input type="file" name="bpmn_file" accept=".bpmn,.xml" required>
+                        <div style="margin-top:4px;">
+                            <button type="submit" class="btn-primary">Uploaden</button>
+                            <button type="button" class="cancel" data-cancel-row="{{ loop.index0 }}">Annuleren</button>
+                        </div>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <script>
+        (function () {
+            document.querySelectorAll('.pm-upload-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var idx = btn.getAttribute('data-toggle-row');
+                    var form = document.getElementById('pm-upload-' + idx);
+                    if (form) form.classList.toggle('active');
+                });
+            });
+            document.querySelectorAll('[data-cancel-row]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var idx = btn.getAttribute('data-cancel-row');
+                    var form = document.getElementById('pm-upload-' + idx);
+                    if (form) form.classList.remove('active');
+                });
+            });
+        })();
+    </script>
+
+    <script>
+        (function () {
+            var rows = document.querySelectorAll('#pm-table tbody .pm-row');
+            var search = document.getElementById('pm-search');
+            var btns = document.querySelectorAll('.pm-filter-row button');
+            var activeFilter = 'all';
+            function applyFilters() {
+                var q = search.value.trim().toLowerCase();
+                rows.forEach(function (r) {
+                    var kind = r.getAttribute('data-kind');
+                    var matched = r.getAttribute('data-matched');
+                    var searchable = r.getAttribute('data-search');
+                    var passFilter =
+                        activeFilter === 'all' ||
+                        (activeFilter === 'upload'    && kind === 'upload')    ||
+                        (activeFilter === 'skeleton'  && kind === 'skeleton')  ||
+                        (activeFilter === 'unmatched' && matched === 'no');
+                    var passSearch = !q || searchable.indexOf(q) >= 0;
+                    r.style.display = (passFilter && passSearch) ? '' : 'none';
+                });
+            }
+            search.addEventListener('input', applyFilters);
+            btns.forEach(function (b) {
+                b.addEventListener('click', function () {
+                    btns.forEach(function (x) { x.classList.remove('active'); });
+                    b.classList.add('active');
+                    activeFilter = b.getAttribute('data-filter');
+                    applyFilters();
+                });
+            });
+        })();
+    </script>
+</section>
+{% endif %}
+
 <section>
     <h2>BPMNs in dit project</h2>
     {% if not project.bpmn_files %}

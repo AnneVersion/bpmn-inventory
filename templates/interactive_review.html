@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+
+{% block title %}Review chunk {{ chunk_idx + 1 }}/{{ total }} - {{ doc.source_file }}{% endblock %}
+
+{% block content %}
+<style>
+    .review-bar { display:flex; align-items:center; gap:12px; margin:12px 0; }
+    .review-bar .bar {
+        flex:1; background:#e5e7eb; border-radius:6px; overflow:hidden; height:22px; position:relative;
+    }
+    .review-bar .bar .fill-ok   { background:#16a34a; height:100%; position:absolute; left:0; top:0; }
+    .review-bar .bar .fill-skip { background:#f59e0b; height:100%; position:absolute; top:0; }
+    .review-bar .bar .label {
+        position:absolute; inset:0; text-align:center; font-size:.8rem; line-height:22px; color:#111;
+    }
+    .breadcrumb { color:#6b7280; font-size:.85rem; margin:6px 0; }
+    .chunk-card {
+        background:#fff; border:1px solid #d1d5db; border-radius:10px; padding:20px; margin:14px 0;
+        box-shadow:0 1px 2px rgba(0,0,0,.05);
+    }
+    .chunk-text {
+        background:#f9fafb; padding:14px; border-radius:6px; border-left:4px solid #3b82f6;
+        font-size:1.05rem; line-height:1.5; white-space:pre-wrap;
+    }
+    .chunk-text.heading { border-left-color:#8b5cf6; font-weight:600; }
+    .candidate-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-top:18px; }
+    .cand-box { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; }
+    .cand-box h3 { margin:0 0 8px; font-size:.95rem; text-transform:uppercase; letter-spacing:.5px; color:#374151; }
+    .cand-box.empty { opacity:.45; }
+    .cand-item {
+        display:flex; align-items:center; justify-content:space-between; gap:8px;
+        padding:6px 10px; margin:4px 0; background:#fff; border-radius:6px; border:1px solid #e5e7eb;
+    }
+    .cand-item label { display:flex; align-items:center; gap:8px; cursor:pointer; flex:1; }
+    .cand-item code { background:none; color:#4b5563; font-size:.85rem; }
+    .cand-kind {
+        font-size:.7rem; padding:2px 6px; border-radius:4px; text-transform:uppercase;
+        background:#dbeafe; color:#1e40af;
+    }
+    .cand-kind.system  { background:#fef3c7; color:#92400e; }
+    .cand-kind.verb    { background:#dcfce7; color:#166534; }
+    .cand-kind.step    { background:#ede9fe; color:#6d28d9; }
+    .cand-kind.excl    { background:#fee2e2; color:#991b1b; }
+    .nav-bar { display:flex; gap:10px; margin:18px 0; flex-wrap:wrap; }
+    .nav-bar .spacer { flex:1; }
+    .decision-note { font-size:.85rem; color:#6b7280; font-style:italic; }
+    .decision-applied {
+        background:#dcfce7; border:1px solid #86efac; padding:6px 10px; border-radius:6px;
+        color:#166534; font-size:.85rem; display:inline-block; margin-top:8px;
+    }
+    .decision-skipped {
+        background:#fef3c7; border:1px solid #fde68a; padding:6px 10px; border-radius:6px;
+        color:#92400e; font-size:.85rem; display:inline-block; margin-top:8px;
+    }
+    .keyboard-hint { color:#9ca3af; font-size:.8rem; }
+    .chunk-jumper { font-size:.85rem; }
+</style>
+
+<section>
+    <a href="{{ url_for('project_interactive_index', pid=project.id) }}" class="btn-secondary">&larr; Overzicht reviews</a>
+    <h1>Review <small style="color:#6b7280;">{{ doc.source_file }}</small></h1>
+
+    <div class="review-bar">
+        <div class="bar">
+            {% set pct_ok = (processed * 100 / total) if total else 0 %}
+            {% set pct_skip = (skipped * 100 / total) if total else 0 %}
+            <div class="fill-ok" style="width:{{ pct_ok }}%;"></div>
+            <div class="fill-skip" style="left:{{ pct_ok }}%;width:{{ pct_skip }}%;"></div>
+            <span class="label">
+                {{ processed }} verwerkt · {{ skipped }} geskipt · {{ remaining }} open · {{ total }} totaal
+            </span>
+        </div>
+        <div class="chunk-jumper">
+            Chunk <strong>{{ chunk_idx + 1 }}</strong> / {{ total }}
+        </div>
+    </div>
+</section>
+
+<section>
+    {% if chunk.breadcrumb %}
+    <div class="breadcrumb">&#187; {{ chunk.breadcrumb|join(' &rsaquo; ') }}</div>
+    {% endif %}
+
+    <div class="chunk-card" id="chunk-card" data-idx="{{ chunk_idx }}">
+        <div class="chunk-text {% if chunk.kind == 'heading' %}heading{% endif %}">{{ chunk.text }}</div>
+        <div style="margin-top:6px;font-size:.8rem;color:#6b7280;">
+            <code>{{ chunk.kind }}</code> · level {{ chunk.level }}
+            {% if chunk.decision == 'processed' %}
+                <span class="decision-applied">&#10003; Eerder verwerkt</span>
+            {% elif chunk.decision == 'skipped' %}
+                <span class="decision-skipped">&#10141; Eerder overgeslagen</span>
+            {% endif %}
+        </div>
+
+        {% set c = chunk.candidates %}
+        <div class="candidate-grid">
+            <div class="cand-box {% if not c.entities %}empty{% endif %}">
+                <h3>Entities <small>({{ c.entities|length }})</small></h3>
+                {% if c.entities %}
+                    {% for e in c.entities %}
+                    <div class="cand-item">
+                        <label>
+                            <input type="checkbox" class="cand-check" data-type="entity"
+                                   data-canonical="{{ e.canonical }}" data-match="{{ e.match }}" checked>
+                            <strong>{{ e.canonical }}</strong>
+                            <code>&larr; "{{ e.match }}"</code>
+                        </label>
+                        <span class="cand-kind">entity</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <em style="color:#9ca3af;">Geen bekende entities gedetecteerd in deze tekst.</em>
+                {% endif %}
+            </div>
+
+            <div class="cand-box {% if not c.systems %}empty{% endif %}">
+                <h3>Systemen / dataStores <small>({{ c.systems|length }})</small></h3>
+                {% if c.systems %}
+                    {% for s in c.systems %}
+                    <div class="cand-item">
+                        <label>
+                            <input type="checkbox" class="cand-check" data-type="system"
+                                   data-match="{{ s.match }}" checked>
+                            <strong>{{ s.match }}</strong>
+                        </label>
+                        <span class="cand-kind system">systeem</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <em style="color:#9ca3af;">Geen systemen gedetecteerd.</em>
+                {% endif %}
+            </div>
+
+            <div class="cand-box {% if not c.processsteps %}empty{% endif %}">
+                <h3>Processtappen <small>({{ c.processsteps|length }})</small></h3>
+                {% if c.processsteps %}
+                    {% for st in c.processsteps %}
+                    <div class="cand-item">
+                        <label>
+                            <input type="checkbox" class="cand-check" data-type="step"
+                                   data-task-name="{{ st.suggested_task_name }}"
+                                   data-action="{{ st.action }}" checked>
+                            <strong>{{ st.suggested_task_name }}</strong>
+                            <code>{{ st.action }}</code>
+                        </label>
+                        <span class="cand-kind step">stap</span>
+                    </div>
+                    {% endfor %}
+                    <div class="decision-note">
+                        Werkwoord: {{ c.verbs|map(attribute='verb')|join(', ') }}
+                    </div>
+                {% else %}
+                    <em style="color:#9ca3af;">
+                        {% if c.verbs %}Werkwoorden gevonden ({{ c.verbs|map(attribute='verb')|join(', ') }}) maar geen data-noun erbij.
+                        {% else %}Geen werkwoord+noun gevonden.{% endif %}
+                    </em>
+                {% endif %}
+            </div>
+
+            {% if c.excluded %}
+            <div class="cand-box">
+                <h3>Genegeerd <small>({{ c.excluded|length }})</small></h3>
+                {% for ex in c.excluded %}
+                <div class="cand-item">
+                    <span><code>{{ ex.match }}</code></span>
+                    <span class="cand-kind excl">{{ ex.reason }}</span>
+                </div>
+                {% endfor %}
+                <div class="decision-note">
+                    Deze termen zijn expliciet uit de kandidaten gefilterd omdat ze op de exclude-lijst staan (generieke suffixes, stopwoorden).
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="nav-bar">
+            <a class="btn-secondary"
+               href="{{ url_for('project_interactive_review', pid=project.id, doc_id=doc.doc_id, chunk=chunk_idx-1) if chunk_idx > 0 else '#' }}"
+               {% if chunk_idx == 0 %}style="pointer-events:none;opacity:.4;"{% endif %}>&larr; Vorige</a>
+            <button type="button" id="btn-skip" class="btn-secondary">Skip &rArr;</button>
+            <div class="spacer"></div>
+            <button type="button" id="btn-process" class="btn-primary">Verwerken &amp; volgende &rarr;</button>
+            <a class="btn-secondary"
+               href="{{ url_for('project_interactive_review', pid=project.id, doc_id=doc.doc_id, chunk=chunk_idx+1) if chunk_idx + 1 < total else '#' }}"
+               {% if chunk_idx + 1 >= total %}style="pointer-events:none;opacity:.4;"{% endif %}>Volgende &rarr;</a>
+        </div>
+        <div class="keyboard-hint">
+            Sneltoetsen: <kbd>Enter</kbd> = verwerken · <kbd>S</kbd> = skip · <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> = navigeren
+        </div>
+    </div>
+</section>
+
+<script>
+    (function () {
+        var applyUrl = "{{ url_for('project_interactive_apply', pid=project.id, doc_id=doc.doc_id) }}";
+        var currentIdx = {{ chunk_idx }};
+        var total = {{ total }};
+
+        function collectPayload() {
+            var p = { entities: [], systems: [], processsteps: [] };
+            document.querySelectorAll('.cand-check:checked').forEach(function (cb) {
+                var t = cb.getAttribute('data-type');
+                if (t === 'entity') {
+                    p.entities.push({
+                        canonical: cb.getAttribute('data-canonical'),
+                        match:     cb.getAttribute('data-match'),
+                    });
+                } else if (t === 'system') {
+                    p.systems.push({ match: cb.getAttribute('data-match') });
+                } else if (t === 'step') {
+                    p.processsteps.push({
+                        suggested_task_name: cb.getAttribute('data-task-name'),
+                        action:              cb.getAttribute('data-action'),
+                    });
+                }
+            });
+            return p;
+        }
+
+        function decide(action) {
+            var body = {
+                chunk_idx: currentIdx,
+                action: action,
+                payload: action === 'process' ? collectPayload() : null,
+            };
+            fetch(applyUrl, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (res) {
+                  if (res.error) { alert('Fout: ' + res.error); return; }
+                  var next = res.next_idx;
+                  if (next == null) {
+                      alert('Alle chunks afgerond! Terug naar overzicht.');
+                      window.location.href =
+                          "{{ url_for('project_interactive_index', pid=project.id) }}";
+                      return;
+                  }
+                  var base = "{{ url_for('project_interactive_review', pid=project.id, doc_id=doc.doc_id) }}";
+                  window.location.href = base + "?chunk=" + next;
+              })
+              .catch(function (e) { alert(String(e.message || e)); });
+        }
+
+        document.getElementById('btn-process').addEventListener('click', function () { decide('process'); });
+        document.getElementById('btn-skip').addEventListener('click', function () { decide('skip'); });
+
+        document.addEventListener('keydown', function (ev) {
+            if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA') return;
+            if (ev.key === 'Enter') { ev.preventDefault(); decide('process'); }
+            else if (ev.key.toLowerCase() === 's') { ev.preventDefault(); decide('skip'); }
+            else if (ev.key === 'ArrowLeft' && currentIdx > 0) {
+                window.location.search = "?chunk=" + (currentIdx - 1);
+            } else if (ev.key === 'ArrowRight' && currentIdx + 1 < total) {
+                window.location.search = "?chunk=" + (currentIdx + 1);
+            }
+        });
+    })();
+</script>
+{% endblock %}

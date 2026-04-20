@@ -39,6 +39,28 @@
                 <div class="project-stats">
                     <span><strong>{{ p.bpmn_count }}</strong> BPMN{% if p.bpmn_count != 1 %}s{% endif %}</span>
                 </div>
+                {% if p.bpmn_upload_count or p.bpmn_skeleton_count %}
+                <div class="project-origin-stats" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+                    {% if p.bpmn_upload_count %}
+                    <span title="Zelf aangeleverde .bpmn-bestanden"
+                          style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600;">
+                        {{ p.bpmn_upload_count }} upload{% if p.bpmn_upload_count != 1 %}s{% endif %}
+                    </span>
+                    {% endif %}
+                    {% if p.bpmn_skeleton_count %}
+                    <span title="Auto-gegenereerde skeletons uit het procesregister"
+                          style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600;">
+                        {{ p.bpmn_skeleton_count }} afgeleid
+                    </span>
+                    {% endif %}
+                    {% if p.bpmn_other_count %}
+                    <span title="BPMNs zonder geregistreerde herkomst (oud of handmatig geplaatst)"
+                          style="background:#f3f4f6;color:#4b5563;padding:2px 8px;border-radius:4px;font-size:.75rem;">
+                        {{ p.bpmn_other_count }} overig
+                    </span>
+                    {% endif %}
+                </div>
+                {% endif %}
                 <small>sinds {{ p.created_at.split('T')[0] }}</small>
             </a>
         </div>

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Processen - {{ project.name }}{% endblock %}
+
+{% block content %}
+<section>
+    <a href="{{ url_for('project_detail', pid=project.id) }}" class="btn-secondary">&larr; Naar project</a>
+    <h1>Processen &amp; BPMN-herkomst — {{ project.name }}</h1>
+    <p class="lead">
+        Vergelijking tussen het geüploade <code>procesregister</code> (CSV) en de aanwezige BPMN-bestanden.
+        Per proces zie je welk BPMN erbij hoort en of dat een echt geüpload bestand is of een automatisch gegenereerd skeleton.
+    </p>
+</section>
+
+<section>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 24px;">
+        <div class="stat-card"><div class="stat-num">{{ totals.records }}</div><div>Processen in CSV</div></div>
+        <div class="stat-card"><div class="stat-num">{{ totals.disk_bpmns }}</div><div>BPMN-bestanden</div></div>
+        <div class="stat-card" style="background:#dbeafe;"><div class="stat-num">{{ totals.uploads }}</div><div>Door gebruiker geüpload</div></div>
+        <div class="stat-card" style="background:#fef3c7;"><div class="stat-num">{{ totals.skeletons }}</div><div>Auto-gegenereerd (skeleton)</div></div>
+        <div class="stat-card" style="background:#dcfce7;"><div class="stat-num">{{ totals.matched_records }}</div><div>Gematched</div></div>
+        <div class="stat-card" style="background:#fee2e2;"><div class="stat-num">{{ totals.unmatched_records }}</div><div>Niet gematched</div></div>
+    </div>
+
+    <style>
+        .stat-card { background:#f1f5f9; padding:12px 16px; border-radius:8px; min-width:140px; }
+        .stat-card .stat-num { font-size:1.8rem; font-weight:700; line-height:1; }
+        .origin-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.8rem; font-weight:600; }
+        .origin-upload   { background:#dbeafe; color:#1e40af; }
+        .origin-skeleton { background:#fef3c7; color:#92400e; }
+        .origin-none     { background:#fee2e2; color:#991b1b; }
+        .match-why { color:#6b7280; font-size:.8rem; }
+        .proc-row.matched    { }
+        .proc-row.unmatched  { background:#fff7ed; }
+    </style>
+
+    <h2>Procesregister (uit <code>procesregister_upload.csv</code>)</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Code</th>
+                <th>Naam</th>
+                <th>Eigenaar / SME</th>
+                <th>Gematched BPMN</th>
+                <th>Herkomst</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+            <tr class="proc-row {% if r.matched %}matched{% else %}unmatched{% endif %}">
+                <td><code>{{ r.code }}</code></td>
+                <td>
+                    <strong>{{ r.naam }}</strong>
+                    {% if r.doel %}
+                    <details><summary style="cursor:pointer;color:#6b7280;font-size:.85rem;">doel</summary>
+                        <small>{{ r.doel[:400] }}{% if r.doel|length > 400 %}…{% endif %}</small>
+                    </details>
+                    {% endif %}
+                </td>
+                <td><small>{% if r.eigenaar %}{{ r.eigenaar }}{% endif %}{% if r.sme %} / {{ r.sme }}{% endif %}</small></td>
+                <td>
+                    {% if r.best_match and r.matched %}
+                        <a href="{{ url_for('project_bpmn_raw', pid=project.id, filename=r.best_match) }}" target="_blank">
+                            <code>{{ r.best_match }}</code>
+                        </a>
+                        <div class="match-why">score {{ r.match_score }} · {{ r.match_why }}</div>
+                    {% elif r.best_match %}
+                        <span style="color:#b45309;">mogelijke match:</span>
+                        <code>{{ r.best_match }}</code> <small>(score {{ r.match_score }}, te laag)</small>
+                    {% else %}
+                        <em style="color:#9ca3af;">geen BPMN gevonden</em>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if r.origin_kind == 'upload' %}
+                        <span class="origin-badge origin-upload" title="Dit is een door de gebruiker aangeleverd .bpmn-bestand.">UPLOAD</span>
+                    {% elif r.origin_kind == 'skeleton' %}
+                        <span class="origin-badge origin-skeleton" title="Dit BPMN is automatisch afgeleid uit de procesregister-rij (CSV → skeleton). Nog geen detailinhoud.">AFGELEID</span>
+                    {% else %}
+                        <span class="origin-badge origin-none">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+{% if orphan_uploads %}
+<section style="margin-top:32px;">
+    <h2>Geüploade BPMNs zonder CSV-match <small style="color:#6b7280;">({{ orphan_uploads|length }})</small></h2>
+    <p class="lead">Deze bestanden heeft de gebruiker zelf geüpload, maar ze konden niet eenduidig aan een proces uit het register gekoppeld worden. Misschien vallen ze onder een ander proces of zijn het L2-subprocessen van een L1-keten.</p>
+    <table class="data-table">
+        <thead>
+            <tr><th>Bestand</th><th>Bron</th><th>Toegevoegd</th></tr>
+        </thead>
+        <tbody>
+        {% for o in orphan_uploads %}
+            <tr>
+                <td>
+                    <a href="{{ url_for('project_bpmn_raw', pid=project.id, filename=o.file) }}" target="_blank">
+                        <code>{{ o.file }}</code>
+                    </a>
+                    <span class="origin-badge origin-upload" style="margin-left:8px;">UPLOAD</span>
+                </td>
+                <td><small>{{ o.source }}</small></td>
+                <td><small>{{ o.created_at }}</small></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+{% endblock %}

@@ -57,13 +57,27 @@ def list_projects(root: Path) -> list[dict]:
                 meta = json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
-        # Tel BPMNs
+        # Tel BPMNs op disk + splits op herkomst (upload vs skeleton).
+        # Zo ziet de gebruiker op de projectkaart in één oogopslag hoeveel
+        # hij zelf heeft aangeleverd versus hoeveel de tool uit het CSV-
+        # register heeft gegenereerd.
         data_dir = pdir / "data"
-        bpmn_count = 0
+        disk_names: list[str] = []
         if data_dir.exists():
-            bpmn_count = sum(1 for p in data_dir.iterdir()
-                             if p.suffix.lower() in (".bpmn", ".xml"))
-        meta["bpmn_count"] = bpmn_count
+            disk_names = [p.name for p in data_dir.iterdir()
+                          if p.suffix.lower() in (".bpmn", ".xml")]
+        origins = meta.get("bpmn_origins", {}) or {}
+        upload_count = sum(
+            1 for n in disk_names if origins.get(n, {}).get("kind") == "upload"
+        )
+        skeleton_count = sum(
+            1 for n in disk_names if origins.get(n, {}).get("kind") == "skeleton"
+        )
+        other_count = len(disk_names) - upload_count - skeleton_count
+        meta["bpmn_count"] = len(disk_names)
+        meta["bpmn_upload_count"] = upload_count
+        meta["bpmn_skeleton_count"] = skeleton_count
+        meta["bpmn_other_count"] = other_count
         out.append(meta)
     out.sort(key=lambda m: m.get("created_at", ""), reverse=True)
     return out
