@@ -43,6 +43,36 @@ if TYPE_CHECKING:
 # Domein-woordenschat (uitbreidbaar)
 # ---------------------------------------------------------------------------
 
+#: Systeemnamen die NOOIT een entiteit mogen worden.
+#: Geleerd uit reviews: CRM/Dynamics/Salesforce zijn systemen, geen ERD-entiteiten.
+SYSTEM_TERMS: set[str] = {
+    "crm", "dynamics", "salesforce", "sf", "sap", "oracle",
+    "afas", "exact", "twinfield", "odoo",
+    "ledenadministratie", "mijnfnv", "mijn fnv",
+    "fis", "kentico", "expoints", "legal",
+    "sharepoint", "excel", "outlook", "teams",
+    "dunck", "kvk", "onderzoekdoen.nl", "power bi", "powerbi",
+    "chatbot", "livechat", "webshop", "kaderportaal",
+    "nexis newsdesk", "selectietool", "portaal", "portal",
+    "database", "register", "systeem", "applicatie",
+    "kentico cms", "mijn-fnv",
+}
+
+#: Generieke termen die GEEN entiteiten zijn.
+#: Geleerd uit reviews: 'gegevens' is een suffix, niet een entiteit;
+#: de echte entiteit is het woord dat ervoor staat (Lid-gegevens -> Lid).
+EXCLUDE_TERMS: set[str] = {
+    "gegevens", "gegeven", "data", "info", "informatie",
+    "bestand", "document", "documenten",
+    "inhoud", "content", "text", "tekst",
+    "onbekend", "overig", "andere",
+    "proces", "processen", "subproces", "deelproces",
+    "stap", "stappen", "activiteit", "activity", "task", "taak",
+    "module", "app",
+    "item", "element", "object",
+    "naam", "omschrijving", "beschrijving",
+}
+
 #: Mapping van gebruikte dataObject-namen naar canonical entity-namen.
 #: Zo worden 'Persoonsgegevens', 'persoonsgegeven' en 'Persoon' allen de
 #: entity 'Persoon'.
@@ -160,6 +190,11 @@ class Entity:
     attributes: list[Attribute] = field(default_factory=list)
     source_processes: set[str] = field(default_factory=set)
     source_bpmn_ids: list[str] = field(default_factory=list)
+    # Structureel herkomstspoor: waar in welke BPMN is deze entity gevonden.
+    # Iedere dict: {kind, file, process, element_id, element_name, excerpt}
+    # kind = 'dataObject' | 'dataStore' | 'task-name' | 'task-doc'
+    #      | 'annotation' | 'process-doc'
+    detection_sources: list[dict] = field(default_factory=list)
     aliases: set[str] = field(default_factory=set)   # originele namen
     is_anchor: bool = False
     is_master: bool = False
@@ -192,16 +227,43 @@ class Relationship:
 _STRIP_SUFFIXES = ["gegevens", "gegeven", "informatie", "info"]
 
 
+def is_system_term(raw: str) -> bool:
+    """True als `raw` een systeem is (geen entiteit)."""
+    if not raw:
+        return False
+    low = raw.strip().lower().replace("-", " ").replace("_", " ")
+    low = re.sub(r"\s+", " ", low).strip()
+    if low in SYSTEM_TERMS:
+        return True
+    compact = low.replace(" ", "")
+    return compact in SYSTEM_TERMS
+
+
+def is_excluded_term(raw: str) -> bool:
+    """True als `raw` een generieke term is die GEEN entiteit is."""
+    if not raw:
+        return True
+    low = raw.strip().lower().replace("-", " ").replace("_", " ")
+    low = re.sub(r"\s+", " ", low).strip()
+    return low in EXCLUDE_TERMS
+
+
 def canonicalize(raw: str) -> str:
     """Zet een dataObject-naam om naar een canonical entity-naam.
 
     Regels (in volgorde):
+    0. Skip systemen (CRM, Salesforce, etc.) -> retourneert "".
+    0b. Skip generieke termen (gegevens, data, info, ...) -> retourneert "".
     1. Lookup in `CANONICAL_MAP` op lowercase.
     2. Strip een '*gegevens'-achtige suffix en probeer opnieuw.
     3. Val terug op Title-cased eerste 'woord' (alleen letters).
     """
     if not raw:
         return ""
+    # Systemen en generieke termen zijn GEEN entiteit
+    if is_system_term(raw) or is_excluded_term(raw):
+        return ""
+
     low = re.sub(r"\s+", " ", raw.strip().lower())
     low = low.replace("-", " ").replace("_", " ").strip()
 
@@ -216,12 +278,17 @@ def canonicalize(raw: str) -> str:
     for suf in _STRIP_SUFFIXES:
         if low.endswith(" " + suf):
             base = low[: -(len(suf) + 1)].strip()
+            # Na suffix-strip: ook systeem/exclude check
+            if is_system_term(base) or is_excluded_term(base):
+                return ""
             if base in CANONICAL_MAP:
                 return CANONICAL_MAP[base]
             if base:
                 return base.capitalize()
         if low.endswith(suf) and len(low) > len(suf):
             base = low[: -len(suf)].rstrip(" -_")
+            if is_system_term(base) or is_excluded_term(base):
+                return ""
             if base in CANONICAL_MAP:
                 return CANONICAL_MAP[base]
             if base:
@@ -231,10 +298,76 @@ def canonicalize(raw: str) -> str:
     words = re.findall(r"[A-Za-z]+", raw)
     if words:
         first = words[0].lower()
+        if is_system_term(first) or is_excluded_term(first):
+            return ""
         if first in CANONICAL_MAP:
             return CANONICAL_MAP[first]
         return words[0][0].upper() + words[0][1:].lower()
-    return raw
+    return ""
+
+
+#: Hand-vastgelegde relaties uit classification_decisions.json. Wordt
+#: gevuld door load_project_decisions() en in build_erd() gebruikt om
+#: domeinrelaties (Lid -> Organisatie, Organisatie -> CAO, etc.) toe te
+#: voegen als er geen dataObject-gebaseerde relaties konden worden
+#: afgeleid.
+_PROJECT_RELATIONS: list[dict] = []
+
+
+def load_project_decisions(project_root: "Path") -> dict:
+    """Laad project-specifieke classification_decisions.json en merge met
+    globale SYSTEM_TERMS / EXCLUDE_TERMS / CANONICAL_MAP en vul
+    _PROJECT_RELATIONS voor domeinrelatie-suggesties.
+
+    Zoekt in: output/handmade/projects/*/classification_decisions.json
+    Past de globale sets/maps live aan tijdens de ERD-opbouw.
+    """
+    root_parent = project_root.parent if project_root.name == "projects" else project_root
+    base = root_parent / "output" / "handmade" / "projects" if (root_parent / "output" / "handmade").exists() else None
+    found_any = {"systems": 0, "exclude": 0, "canonical": 0,
+                 "relations": 0, "file": None}
+    # Reset module-level relations voor clean re-run
+    _PROJECT_RELATIONS.clear()
+    if base and base.exists():
+        import json as _json
+        for proj_dir in base.iterdir():
+            cd = proj_dir / "classification_decisions.json"
+            if not cd.exists():
+                continue
+            try:
+                data = _json.loads(cd.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for key, info in (data.get("systems", {}) or {}).items():
+                aliasen = info.get("aliassen", []) if isinstance(info, dict) else []
+                for alias in aliasen:
+                    SYSTEM_TERMS.add(alias.lower())
+                    found_any["systems"] += 1
+                nm = info.get("name", "") if isinstance(info, dict) else ""
+                if nm:
+                    SYSTEM_TERMS.add(nm.lower())
+                    found_any["systems"] += 1
+            for term in (data.get("exclude_from_entities", []) or []):
+                EXCLUDE_TERMS.add(term.lower())
+                found_any["exclude"] += 1
+            for k, v in (data.get("canonical_map", {}) or {}).items():
+                if v:
+                    CANONICAL_MAP[k.lower()] = v
+                    found_any["canonical"] += 1
+            # Hand-vastgelegde domeinrelaties (van/naar/type/label)
+            for rel in (data.get("relaties", []) or []):
+                if isinstance(rel, dict) and rel.get("van") and rel.get("naar"):
+                    _PROJECT_RELATIONS.append({
+                        "van": rel["van"],
+                        "naar": rel["naar"],
+                        "type": rel.get("type", "N:M"),
+                        "label": rel.get("label", "gerelateerd"),
+                        "optioneel": bool(rel.get("optioneel", False)),
+                        "source_file": str(cd.name),
+                    })
+                    found_any["relations"] += 1
+            found_any["file"] = str(cd)
+    return found_any
 
 
 def _snake(name: str) -> str:
@@ -280,7 +413,7 @@ _TASK_VERB_ACTIONS: dict[str, str] = {
     "bewaar": "CREATE",
     "muteer": "UPDATE", "wijzig": "UPDATE", "pas aan": "UPDATE",
     "update": "UPDATE", "bijwerk": "UPDATE", "aanpas": "UPDATE",
-    "verwerk": "UPDATE",
+    "verwerk": "UPDATE", "uitvoer": "UPDATE", "afsluit": "UPDATE",
     "zoek op": "READ", "opzoek": "READ", "raadpleeg": "READ",
     "bekijk": "READ", "ontvang": "READ", "controleer": "READ",
     "valideer": "READ", "beoordeel": "READ", "goedkeur": "READ",
@@ -363,12 +496,23 @@ def _merge_user_defined_attributes(
 
 
 def build_erd(model: "MergedModel",
-              user_defs: dict | None = None
+              user_defs: dict | None = None,
+              project_root: "Path | None" = None,
               ) -> tuple[list[Entity], list[Relationship]]:
     """Bouw lijst van entities + relationships volgens ERD-theorie.
 
     `user_defs` = inhoud van /definitions (heeft voorrang bij attributen).
+    `project_root` = als gegeven, wordt classification_decisions.json
+                     uit output/handmade/projects/ geladen om SYSTEM_TERMS,
+                     EXCLUDE_TERMS en CANONICAL_MAP uit te breiden.
     """
+    # Merge project-specifieke decisions
+    if project_root is not None:
+        try:
+            load_project_decisions(project_root)
+        except Exception:
+            pass
+
     entities: dict[str, Entity] = {}        # canonical -> Entity
 
     def _get_or_create(canonical: str, original: str) -> Entity:
@@ -387,6 +531,7 @@ def build_erd(model: "MergedModel",
 
     # --- Step 1: entities uit dataObjects + dataStores
     for parsed in model.bpmns:
+        proc_name_1 = parsed.process_name or parsed.source_file
         for d in parsed.data_objects:
             if not d.name or d.name.startswith("(naamloos"):
                 continue
@@ -394,8 +539,13 @@ def build_erd(model: "MergedModel",
             if not canonical:
                 continue
             e = _get_or_create(canonical, d.name)
-            e.source_processes.add(parsed.process_name or parsed.source_file)
+            e.source_processes.add(proc_name_1)
             e.source_bpmn_ids.append(d.id)
+            e.detection_sources.append({
+                "kind": "dataObject", "file": parsed.source_file,
+                "process": proc_name_1, "element_id": d.id,
+                "element_name": d.name, "excerpt": d.name,
+            })
 
         for ds in parsed.data_stores:
             if not ds.name or ds.name.startswith("(naamloos"):
@@ -405,31 +555,71 @@ def build_erd(model: "MergedModel",
                 continue
             e = _get_or_create(canonical, ds.name)
             e.is_master = True
-            e.source_processes.add(parsed.process_name or parsed.source_file)
+            e.source_processes.add(proc_name_1)
+            e.detection_sources.append({
+                "kind": "dataStore", "file": parsed.source_file,
+                "process": proc_name_1, "element_id": ds.id,
+                "element_name": ds.name, "excerpt": ds.name,
+            })
 
-    # --- Step 1b: FALLBACK — als geen (of te weinig) expliciete dataObjects,
-    # leid entities af uit taaknamen via CANONICAL_MAP / ATTRIBUTE_HINTS-keys.
-    # Zo werkt het ERD ook voor BPMNs waar de modelleur geen dataObjects
-    # heeft getekend (bv. gegenereerd uit procesbeschrijvings-documenten).
-    if len(entities) < 2:
-        noun_hints = sorted(set(CANONICAL_MAP.keys()) |
-                            set(ATTRIBUTE_HINTS.keys()))
-        for parsed in model.bpmns:
-            proc_name = parsed.process_name or parsed.source_file
-            for t in parsed.tasks:
-                name = (t.name or "").lower()
-                if not name:
-                    continue
-                for hint in noun_hints:
-                    if len(hint) < 3:
-                        continue
-                    if re.search(r"\b" + re.escape(hint), name):
-                        canonical = canonicalize(hint)
-                        if not canonical:
-                            continue
-                        e = _get_or_create(canonical, hint)
-                        e.source_processes.add(proc_name)
-                        e.source_bpmn_ids.append(t.id)
+    # --- Step 1b: altijd scan taaknamen + textAnnotations + documentation
+    # voor entity-kandidaten via CANONICAL_MAP. Werkt ook als er wel
+    # dataObjects zijn: geeft extra bronnen voor dezelfde entity.
+    # Geleerd (LEARNINGS 2026-04-19): Doel-tekst in textAnnotation bevat
+    # vaak entiteit-namen ("aan het bedrijf of lid gekoppeld") — die
+    # willen we ook als source_process registreren.
+    noun_hints = sorted(set(CANONICAL_MAP.keys()) | set(ATTRIBUTE_HINTS.keys()))
+    noun_hints = [h for h in noun_hints if len(h) >= 3]
+
+    def _scan_text_for_entities(text: str, proc_name: str, kind: str,
+                                file_name: str, element_id: str,
+                                element_name: str) -> None:
+        if not text:
+            return
+        low = text.lower()
+        for hint in noun_hints:
+            m = re.search(r"\b" + re.escape(hint) + r"\w{0,3}\b", low)
+            if not m:
+                continue
+            canonical = canonicalize(hint)
+            if not canonical:
+                continue
+            e = _get_or_create(canonical, hint)
+            e.source_processes.add(proc_name)
+            e.source_bpmn_ids.append(f"{kind}:{element_id}:{proc_name}")
+            # Excerpt: stukje rond de match zodat je in de UI ziet
+            # welke zin/woord tot de entity-detectie leidde.
+            start = max(0, m.start() - 25)
+            end = min(len(text), m.end() + 25)
+            excerpt = text[start:end].strip()
+            if start > 0:
+                excerpt = "…" + excerpt
+            if end < len(text):
+                excerpt = excerpt + "…"
+            e.detection_sources.append({
+                "kind": kind, "file": file_name, "process": proc_name,
+                "element_id": element_id, "element_name": element_name,
+                "excerpt": excerpt, "match": hint,
+            })
+
+    for parsed in model.bpmns:
+        proc_name = parsed.process_name or parsed.source_file
+        for t in parsed.tasks:
+            _scan_text_for_entities(t.name or "", proc_name, "task-name",
+                                    parsed.source_file, t.id, t.name or "")
+            # Task-documentation (zit in attributes onder 'documentation')
+            doc = (t.attributes or {}).get("documentation", "") if hasattr(t, "attributes") else ""
+            _scan_text_for_entities(doc, proc_name, "task-doc",
+                                    parsed.source_file, t.id, t.name or "")
+        # Text annotations (Doel-tekst, opmerkingen)
+        for ann in getattr(parsed, "annotations", []):
+            txt = (ann.name or "") + " " + (ann.attributes or {}).get("text", "")
+            _scan_text_for_entities(txt, proc_name, "annotation",
+                                    parsed.source_file, ann.id, ann.name or "")
+        # Process-level documentation
+        _scan_text_for_entities(getattr(parsed, "process_documentation", ""),
+                                proc_name, "process-doc",
+                                parsed.source_file, "", parsed.process_name or "")
 
     if not entities:
         return [], []
@@ -587,38 +777,70 @@ def build_erd(model: "MergedModel",
                 break
 
     # --- Step 6b: tekst-co-occurrence relaties (voor BPMNs zonder
-    # formele data-associations, bv. gegenereerd uit Word-docs).
-    # Alleen entities die in DEZELFDE ZIN van een proces-documentation
-    # voorkomen krijgen een 'gerelateerd (tekst)'-relatie. Voorkomt
-    # explosie van relaties tussen alle entities in een doc.
+    # formele data-associations, bv. gegenereerd uit Word-docs of
+    # skeleton-BPMNs die alleen een taaknaam + annotation bevatten).
+    #
+    # Bron-teksten die meetellen:
+    #   - process-documentation (oorspronkelijk gedrag)
+    #   - textAnnotations        (Doel-tekst, opmerkingen)
+    #   - taaknamen              (vaak "Koppelen cao aan bedrijf/lid")
+    # Alleen entities die in dezelfde zin/tekst voorkomen worden gekoppeld,
+    # zodat relaties hun evidence behouden en er geen explosie ontstaat.
     existing_pairs = {
         tuple(sorted([r.left, r.right])) for r in relationships
     }
-    # Per paar: tel hoe vaak ze samen in 1 zin voorkomen
     cooc: dict[tuple[str, str], int] = defaultdict(int)
     cooc_evidence: dict[tuple[str, str], list[str]] = defaultdict(list)
+    # Namen gesorteerd van lang naar kort — zodat 'organisatie' eerder
+    # matcht dan 'org' (voorkomt valse positieven bij deelwoorden).
+    _entity_names = sorted(entities.keys(), key=len, reverse=True)
+
+    def _scan_sentence(sent: str) -> None:
+        sent_low = sent.lower()
+        found = []
+        for name in _entity_names:
+            # Aliases tellen ook mee (lid/leden/lidgegevens -> Lid)
+            hits = [name.lower()]
+            for alias in entities[name].aliases:
+                if alias and alias.lower() != name.lower():
+                    hits.append(alias.lower())
+            for h in hits:
+                if re.search(r"\b" + re.escape(h) + r"\w{0,3}\b", sent_low):
+                    found.append(name)
+                    break
+        # Dedupliceer & filter op >=2 entities in dezelfde zin
+        uniq = []
+        for n in found:
+            if n not in uniq:
+                uniq.append(n)
+        if len(uniq) < 2:
+            return
+        for i in range(len(uniq)):
+            for j in range(i + 1, len(uniq)):
+                a, b = uniq[i], uniq[j]
+                key = tuple(sorted([a, b]))
+                cooc[key] += 1
+                if len(cooc_evidence[key]) < 2:
+                    cooc_evidence[key].append(sent[:140].strip())
+
     for parsed in model.bpmns:
+        # Process-level documentation
         proc_doc = getattr(parsed, "process_documentation", "") or ""
-        if not proc_doc:
-            continue
-        # Split in zinnen
-        for sent in re.split(r"(?<=[.!?])\s+", proc_doc):
-            sent_low = sent.lower()
-            found_in_sent = []
-            for name in entities:
-                if re.search(r"\b" + re.escape(name.lower()) + r"\w*\b",
-                             sent_low):
-                    found_in_sent.append(name)
-            if len(found_in_sent) < 2:
+        if proc_doc:
+            for sent in re.split(r"(?<=[.!?])\s+", proc_doc):
+                _scan_sentence(sent)
+        # Tekst-annotations (Doel-tekst in textAnnotation)
+        for ann in getattr(parsed, "annotations", []):
+            txt = ((ann.attributes or {}).get("text")
+                   or ann.name or "")
+            if not txt:
                 continue
-            # Voeg paren toe uit deze zin
-            for i in range(len(found_in_sent)):
-                for j in range(i + 1, len(found_in_sent)):
-                    a, b = found_in_sent[i], found_in_sent[j]
-                    key = tuple(sorted([a, b]))
-                    cooc[key] += 1
-                    if len(cooc_evidence[key]) < 2:
-                        cooc_evidence[key].append(sent[:120])
+            for sent in re.split(r"(?<=[.!?|])\s+", txt):
+                _scan_sentence(sent)
+        # Taaknamen — vaak compact formeel ("Koppelen cao aan lid")
+        for t in parsed.tasks:
+            if t.name:
+                _scan_sentence(t.name)
 
     # Voeg relatie toe voor paren die in >= 1 zin samen voorkomen
     for (a, b), count in cooc.items():
@@ -631,6 +853,41 @@ def build_erd(model: "MergedModel",
             label=f"gerelateerd (tekst, {count}×)",
             evidence=cooc_evidence[(a, b)],
         ))
+
+    # --- Step 6b2: hand-vastgelegde domeinrelaties uit
+    # classification_decisions.json (relaties-sectie). Deze vormen de
+    # kennis-basis van een business analyst die het domein al heeft
+    # uitgedacht — tonen als SUGGESTIE zodra beide entities bestaan.
+    _CARD_FROM_TYPE = {
+        "1:1": ("1", "1"),   "1:N": ("1", "0..N"),
+        "N:1": ("0..N", "1"),"N:M": ("0..N", "0..N"),
+        "M:N": ("0..N", "0..N"),
+    }
+    for pr in _PROJECT_RELATIONS:
+        a, b = pr["van"], pr["naar"]
+        if a not in entities or b not in entities:
+            continue
+        key = tuple(sorted([a, b]))
+        if key in existing_pairs:
+            # Bestaande relatie verrijken met label als die generiek was
+            for rel in relationships:
+                if {rel.left, rel.right} == {a, b}:
+                    if rel.label.startswith("gerelateerd"):
+                        rel.label = f"{pr['label']} [suggestie]"
+                    rel.evidence.append(
+                        f"classification_decisions.json: {pr['type']}"
+                    )
+                    break
+            continue
+        lc, rc = _CARD_FROM_TYPE.get(pr["type"], ("0..N", "0..N"))
+        relationships.append(Relationship(
+            left=a, right=b,
+            left_card=lc, right_card=rc,
+            label=f"{pr['label']} [suggestie]",
+            evidence=[f"classification_decisions.json ({pr['source_file']}): "
+                      f"{a} —{pr['type']}→ {b}"],
+        ))
+        existing_pairs.add(key)
 
     # --- Step 6c: FK-relaties via attribuut-naam-match
     # Als entity A een attribuut heeft dat gelijk is aan de naam van
@@ -726,6 +983,50 @@ def cross_bpmn_findings(entities: list[Entity]) -> list[dict]:
                                "deze entity gebruikt."),
                 "matched_keywords": [],
                 "action_type": "", "suggested_object": "",
+                "suggested_attributes": [], "fixable": False,
+            })
+
+        # X004: entity alleen via tekst gedetecteerd, geen formele dataObject
+        # of dataStore. De lezer van de BPMN mist dus een expliciete
+        # <bpmn:dataObject> koppeling — verbeterpunt voor de BPMN.
+        formal_kinds = {"dataObject", "dataStore"}
+        text_kinds = {"task-name", "task-doc", "annotation", "process-doc"}
+        has_formal = any(ds.get("kind") in formal_kinds
+                         for ds in e.detection_sources)
+        has_text = any(ds.get("kind") in text_kinds
+                       for ds in e.detection_sources)
+        if has_text and not has_formal:
+            # Beknopte lijst van herkomst-locaties voor de melding
+            spots = []
+            for ds in e.detection_sources[:3]:
+                label = ds.get("kind", "?")
+                nm = ds.get("element_name") or ds.get("file") or "?"
+                spots.append(f"{label} in '{nm}'")
+            spots_str = "; ".join(spots)
+            out.append({
+                "rule": "X004",
+                "rule_title": ("Entity alleen impliciet gedetecteerd "
+                               "(geen dataObject)"),
+                "severity": "warning",
+                "source_file": ", ".join(sorted(
+                    {ds.get("file", "") for ds in e.detection_sources
+                     if ds.get("file")}
+                )),
+                "element_id": e.id,
+                "element_name": e.name,
+                "element_kind": "entity",
+                "message": (f"Entity '{e.name}' wordt alleen herkend uit "
+                            f"taaknamen/annotaties ({spots_str}). Er is "
+                            "geen expliciete <bpmn:dataObject> of "
+                            "<bpmn:dataStore> die deze entity vastlegt."),
+                "suggestion": (f"Voeg een <bpmn:dataObject> '{e.name}' + "
+                               "dataInputAssociation of dataOutputAssociation "
+                               "toe aan de betrokken taak, zodat de "
+                               "entity traceerbaar wordt."),
+                "matched_keywords": sorted({ds.get("match", "")
+                                            for ds in e.detection_sources
+                                            if ds.get("match")}),
+                "action_type": "", "suggested_object": e.name,
                 "suggested_attributes": [], "fixable": False,
             })
 
@@ -846,6 +1147,7 @@ def summarize(entities: list[Entity],
             "parent": e.parent,
             "aliases": sorted(e.aliases),
             "source_processes": sorted(e.source_processes),
+            "detection_sources": e.detection_sources[:50],
             "user_defined": e.user_defined,
             "lifecycle": {
                 "creators": sorted(e.creators),

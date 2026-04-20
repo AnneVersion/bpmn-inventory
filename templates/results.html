@@ -205,6 +205,7 @@
                     <tr>
                         <th>Entity</th><th>Type</th>
                         <th>Aliases</th>
+                        <th>Herkomst (waaruit gedetecteerd)</th>
                         <th>Lifecycle (proc → actie)</th>
                         <th>Attributen</th>
                     </tr>
@@ -224,6 +225,33 @@
                             {% endif %}
                         </td>
                         <td><small>{% for a in e.aliases %}<code>{{ a }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</small></td>
+                        <td>
+                            {% set dsrc = e.detection_sources or [] %}
+                            {% set formal = dsrc|selectattr('kind','in',['dataObject','dataStore'])|list %}
+                            {% set textual = dsrc|rejectattr('kind','in',['dataObject','dataStore'])|list %}
+                            <small>
+                                {% if formal %}
+                                    <span class="lc-badge lc-create">formeel: {{ formal|length }}×</span><br>
+                                    {% for ds in formal[:3] %}
+                                        <code>{{ ds.kind }}</code> <em>{{ ds.element_name }}</em>
+                                        <span style="color:#666;">in {{ ds.file }}</span><br>
+                                    {% endfor %}
+                                {% endif %}
+                                {% if textual %}
+                                    <span class="lc-badge lc-read">tekst: {{ textual|length }}×</span><br>
+                                    {% for ds in textual[:3] %}
+                                        <code>{{ ds.kind }}</code>
+                                        {% if ds.element_name %}<em>{{ ds.element_name }}</em>{% endif %}
+                                        <span style="color:#666;">in {{ ds.file }}</span>
+                                        {% if ds.excerpt %}<br><span style="color:#666;font-style:italic;">&ldquo;{{ ds.excerpt }}&rdquo;</span>{% endif %}<br>
+                                    {% endfor %}
+                                    {% if textual|length > 3 %}<span style="color:#999;">… en nog {{ textual|length - 3 }}</span>{% endif %}
+                                {% endif %}
+                                {% if textual and not formal %}
+                                    <div style="color:#b45309;margin-top:4px;">⚠ alleen impliciet gedetecteerd — zie X004</div>
+                                {% endif %}
+                            </small>
+                        </td>
                         <td><small>
                             {% for c in e.lifecycle.creators %}<span class="lc-badge lc-create">CREATE: {{ c }}</span>{% endfor %}
                             {% for c in e.lifecycle.updaters %}<span class="lc-badge lc-update">UPDATE: {{ c }}</span>{% endfor %}

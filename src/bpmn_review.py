@@ -74,6 +74,27 @@ RULES: dict[str, dict] = {
                     " er is geen <bpmn:dataStore> als bron gedefinieerd."},
     "R103": {"title": "DataObject zonder naam", "severity": "error",
              "why": "Een naamloos dataObject kan niet in de inventarisatie."},
+
+    # --- Cross-BPMN (ERD-afleiding) ---
+    "X001": {"title": "Entity wordt gelezen maar nooit aangemaakt",
+             "severity": "warning",
+             "why": "Ergens wordt de entity geconsumeerd terwijl geen "
+                    "aangeleverd proces hem aanmaakt — mogelijk ontbreekt "
+                    "een CREATE-proces of moet de entity een dataStore zijn."},
+    "X002": {"title": "Entity wordt aangemaakt maar nooit gelezen",
+             "severity": "info",
+             "why": "Dead data: de entity wordt opgevoerd maar door geen "
+                    "aangeleverd proces gebruikt."},
+    "X003": {"title": "Zelfde entiteit onder verschillende namen",
+             "severity": "info",
+             "why": "De tool heeft meerdere aliases samengevoegd tot één "
+                    "entiteit; harmoniseer de naamgeving."},
+    "X004": {"title": "Entity alleen impliciet gedetecteerd (geen dataObject)",
+             "severity": "warning",
+             "why": "De entity is uitsluitend uit taaknamen/annotaties "
+                    "afgeleid, niet via een <bpmn:dataObject> of "
+                    "<bpmn:dataStore>. Verbeterpunt: voeg een expliciete "
+                    "dataObject-koppeling toe voor traceerbaarheid."},
 }
 
 
@@ -88,10 +109,10 @@ VERB_ACTIONS: dict[str, str] = {
     "creeer": "WRITE", "opvoer": "WRITE", "vastleg": "WRITE",
     "opslaan": "WRITE", "opsla": "WRITE", "bewaar": "WRITE",
     "verzend": "WRITE", "verstuur": "WRITE",
-    # UPDATE = bestaand wijzigen
+    # UPDATE = bestaand wijzigen / uitvoeren van een bewerking
     "muteer": "UPDATE", "wijzig": "UPDATE", "pas aan": "UPDATE",
     "aanpas": "UPDATE", "update": "UPDATE", "bijwerk": "UPDATE",
-    "verwerk": "UPDATE",
+    "verwerk": "UPDATE", "uitvoer": "UPDATE", "afsluit": "UPDATE",
     # READ = opzoeken / raadplegen / controleren
     "zoek op": "READ", "opzoek": "READ", "raadpleeg": "READ",
     "raadple": "READ", "bekijk": "READ",
